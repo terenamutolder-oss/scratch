@@ -23,7 +23,8 @@ export default function App() {
     <ProjectProvider
       key={currentUser.id}
       userId={currentUser.id}
-      authorName={currentUser.displayName}
+      username={currentUser.username}
+      displayName={currentUser.displayName}
     >
       <EditorShell />
     </ProjectProvider>
@@ -31,10 +32,11 @@ export default function App() {
 }
 
 function EditorShell() {
-  const { view } = useProject();
+  const { view, isOwner, project } = useProject();
+  const readOnlyEditor = view === "editor" && !isOwner;
 
   return (
-    <div className="app-root">
+    <div className={`app-root ${readOnlyEditor ? "app-root--readonly" : ""}`}>
       <header className="app-header">
         <div className="brand">
           <span className="brand-logo" aria-hidden>
@@ -42,7 +44,7 @@ function EditorShell() {
           </span>
           <div>
             <h1>Scratch Web</h1>
-            <p className="brand-tag">Block coding in the browser — v0.4</p>
+            <p className="brand-tag">Block coding in the browser — v0.5</p>
           </div>
         </div>
         <Toolbar />
@@ -55,13 +57,22 @@ function EditorShell() {
         </main>
       ) : (
         <main className="app-main">
-          <aside className="palette-panel">
-            <h2 className="panel-title">Blocks</h2>
-            <BlockPalette />
-          </aside>
+          {readOnlyEditor ? null : (
+            <aside className="palette-panel">
+              <h2 className="panel-title">Blocks</h2>
+              <BlockPalette />
+            </aside>
+          )}
 
           <section className="scripts-panel">
-            <h2 className="panel-title">Scripts</h2>
+            <h2 className="panel-title">
+              Scripts
+              {readOnlyEditor ? (
+                <span className="panel-readonly-tag" title={`Created by ${project.ownerDisplayName ?? "another user"}`}>
+                  read-only
+                </span>
+              ) : null}
+            </h2>
             <ScriptsCanvas />
           </section>
 
@@ -76,7 +87,7 @@ function EditorShell() {
       <footer className="app-footer">
         <span>
           Agent instructions: <code>AGENTS.md</code> · Product docs:{" "}
-          <code>docs/</code> · Library auto-saves to this browser.
+          <code>docs/</code> · Library shared across this browser.
         </span>
       </footer>
     </div>

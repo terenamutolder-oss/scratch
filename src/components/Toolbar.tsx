@@ -5,7 +5,9 @@ export default function Toolbar() {
   const {
     library,
     project,
+    view,
     running,
+    isOwner,
     greenFlag,
     stopAll,
     setView,
@@ -25,16 +27,14 @@ export default function Toolbar() {
     <div className="toolbar">
       <button
         type="button"
-        className={`btn btn-ghost ${library.view === "explore" ? "is-active" : ""}`}
-        onClick={() =>
-          setView(library.view === "explore" ? "editor" : "explore")
-        }
+        className={`btn btn-ghost ${view === "explore" ? "is-active" : ""}`}
+        onClick={() => setView(view === "explore" ? "editor" : "explore")}
         title="Browse all projects and studios"
       >
-        🗂 {library.view === "explore" ? "Editor" : "Explore"} ({totalProjects})
+        🗂 {view === "explore" ? "Editor" : "Explore"} ({totalProjects})
       </button>
 
-      {editingName ? (
+      {editingName && isOwner ? (
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -57,8 +57,13 @@ export default function Toolbar() {
         <button
           type="button"
           className="toolbar-name"
-          title="Click to rename project"
+          title={
+            isOwner
+              ? "Click to rename project"
+              : `Created by ${project.ownerDisplayName ?? "another user"} — read-only`
+          }
           onClick={() => {
+            if (!isOwner) return;
             setNameDraft(project.name);
             setEditingName(true);
           }}
@@ -66,6 +71,17 @@ export default function Toolbar() {
           {project.name}
         </button>
       )}
+
+      {!isOwner ? (
+        <span
+          className="toolbar-readonly"
+          title={`This project was created by ${
+            project.ownerDisplayName ?? "another user"
+          }. You can run it and add comments, but only the creator can edit.`}
+        >
+          🔒 read-only · by {project.ownerDisplayName ?? "—"}
+        </span>
+      ) : null}
 
       <button
         type="button"

@@ -26,17 +26,21 @@ import type {
 } from "../types/blocks";
 import type {
   Comment,
-  Library,
+  LegacyLibrary,
   LibraryView,
+  SharedLibrary,
   StoredProject,
   Studio,
+  UserState,
 } from "../types/library";
 import { makeSprite } from "../engine/sprite";
 import { Runtime } from "../engine/runtime";
 import { runStack } from "../engine/interpreter";
 import {
   LEGACY_LIBRARY_KEY,
-  libraryStorageKey,
+  SHARED_LIBRARY_KEY,
+  legacyUserLibraryKey,
+  userStateKey,
 } from "../types/auth";
 
 const LEGACY_FLAT_PROJECT_KEY = "scratch-web/project";
@@ -66,9 +70,14 @@ export type BlockRef = {
 export type InputRef = BlockRef & { inputKey: string };
 export type FieldRef = BlockRef & { fieldKey: string };
 
-/* --------------------------- defaults / migration --------------------------- */
+/* --------------------------- builders --------------------------- */
 
-function newStoredProject(name = "Untitled"): StoredProject {
+function newStoredProject(
+  name: string,
+  ownerId: string,
+  ownerUsername: string,
+  ownerDisplayName: string,
+): StoredProject {
   const cat = makeSprite("Cat", "🐱");
   return {
     id: randomId(),
@@ -82,111 +91,208 @@ function newStoredProject(name = "Untitled"): StoredProject {
     selectedSpriteId: cat.id,
     variables: [],
     broadcasts: [],
+    ownerId,
+    ownerUsername,
+    ownerDisplayName,
   };
 }
 
-function defaultLibrary(): Library {
-  const p = newStoredProject("My first project");
-  return {
-    projects: { [p.id]: p },
-    projectOrder: [p.id],
-    studios: {},
-    studioOrder: [],
-    currentProjectId: p.id,
-    view: "editor",
-    authorName: "you",
-  };
-}
+/* --------------------------- migration --------------------------- */
 
-function tryParseLibrary(raw: string): Library | null {
+function loadSharedLibrary(): SharedLibrary {
   try {
-    const parsed = JSON.parse(raw) as Library;
-    if (!parsed.projects || !parsed.projectOrder || !parsed.currentProjectId) {
-      return null;
+    const raw = localStorage.getItem(SHARED_LIBRARY_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as SharedLibrary;
+      if (parsed.projects && parsed.projectOrder) {
+        return {
+          projects: parsed.projects,
+          projectOrder: parsed.projectOrder,
+          studios: parsed.studios ?? {},
+          studioOrder: parsed.studioOrder ?? [],
+        };
+      }
     }
-    return {
-      projects: parsed.projects,
-      projectOrder: parsed.projectOrder,
-      studios: parsed.studios ?? {},
-      studioOrder: parsed.studioOrder ?? [],
-      currentProjectId: parsed.currentProjectId,
-      view: parsed.view ?? "editor",
-      authorName: parsed.authorName ?? "you",
-    };
   } catch {
-    return null;
+    /* ignore */
   }
+  return { projects: {}, projectOrder: [], studios: {}, studioOrder: [] };
 }
 
-/**
- * Load this user's library, migrating from legacy keys on first run.
- *
- * Order:
- *   1. Per-user library at `scratch-web/library/<userId>` — use directly.
- *   2. Legacy multi-project library at `scratch-web/library` — claim for this
- *      user and delete the legacy key.
- *   3. Legacy single-project payload at `scratch-web/project` — wrap into a
- *      one-project library and delete the legacy key.
- *   4. Default empty library.
- */
-function loadLibrary(userId: string): Library {
-  const key = libraryStorageKey(userId);
-  const raw = localStorage.getItem(key);
-  if (raw) {
-    const parsed = tryParseLibrary(raw);
-    if (parsed) return parsed;
-  }
-  try {
-    const legacyLib = localStorage.getItem(LEGACY_LIBRARY_KEY);
-    if (legacyLib) {
-      const parsed = tryParseLibrary(legacyLib);
-      if (parsed) {
-        try {
-          localStorage.removeItem(LEGACY_LIBRARY_KEY);
-        } catch {
-          /* ignore */
-        }
-        return parsed;
-      }
+function mergeLegacyLibrary(
+  shared: SharedLibrary,
+  lib: LegacyLibrary,
+  userId: string,
+  username: string,
+  displayName: string,
+): SharedLibrary {
+  const tagProject = (p: StoredProject): StoredProject => ({
+    ...p,
+    ownerId: p.ownerId ?? userId,
+    ownerUsername: p.ownerUsername ?? username,
+    ownerDisplayName: p.ownerDisplayName ?? displayName,
+    comments: (p.comments ?? []).map((c) => ({
+      ...c,
+      authorId: c.authorId ?? userId,
+      authorUsername: c.authorUsername ?? username,
+    })),
+  });
+  const tagStudio = (s: Studio): Studio => ({
+    ...s,
+    ownerId: s.ownerId ?? userId,
+    ownerUsername: s.ownerUsername ?? username,
+  });
+  const projects = { ...shared.projects };
+  const projectOrder = [...shared.projectOrder];
+  for (const id of lib.projectOrder) {
+    const p = lib.projects[id];
+    if (p && !projects[id]) {
+      projects[id] = tagProject(p);
+      projectOrder.push(id);
     }
-    const legacyFlat = localStorage.getItem(LEGACY_FLAT_PROJECT_KEY);
-    if (legacyFlat) {
-      const legacyProject = JSON.parse(legacyFlat) as Project;
-      const wrapped: StoredProject = {
-        ...newStoredProject("Imported project"),
-        sprites: legacyProject.sprites,
-        selectedSpriteId: legacyProject.selectedSpriteId,
-        variables: legacyProject.variables,
-        broadcasts: legacyProject.broadcasts,
-      };
-      try {
-        localStorage.removeItem(LEGACY_FLAT_PROJECT_KEY);
-      } catch {
-        /* ignore */
+  }
+  const studios = { ...shared.studios };
+  const studioOrder = [...shared.studioOrder];
+  for (const sid of lib.studioOrder) {
+    const s = lib.studios[sid];
+    if (s && !studios[sid]) {
+      studios[sid] = tagStudio(s);
+      studioOrder.push(sid);
+    }
+  }
+  return { projects, projectOrder, studios, studioOrder };
+}
+
+function migrate(
+  userId: string,
+  username: string,
+  displayName: string,
+): { shared: SharedLibrary; preferredUserState: UserState | null } {
+  let shared = loadSharedLibrary();
+  let preferredUserState: UserState | null = null;
+
+  // v0.4 legacy: per-user library
+  try {
+    const k = legacyUserLibraryKey(userId);
+    const raw = localStorage.getItem(k);
+    if (raw) {
+      const lib = JSON.parse(raw) as LegacyLibrary;
+      if (lib.projects && lib.projectOrder) {
+        shared = mergeLegacyLibrary(shared, lib, userId, username, displayName);
+        preferredUserState = {
+          currentProjectId: lib.currentProjectId,
+          view: lib.view ?? "editor",
+        };
       }
+      localStorage.removeItem(k);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // v0.3 legacy: shared single library (pre-account)
+  try {
+    const raw = localStorage.getItem(LEGACY_LIBRARY_KEY);
+    if (raw) {
+      const lib = JSON.parse(raw) as LegacyLibrary;
+      if (lib.projects && lib.projectOrder) {
+        shared = mergeLegacyLibrary(shared, lib, userId, username, displayName);
+        if (!preferredUserState) {
+          preferredUserState = {
+            currentProjectId: lib.currentProjectId,
+            view: lib.view ?? "editor",
+          };
+        }
+      }
+      localStorage.removeItem(LEGACY_LIBRARY_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // v0.1/0.2 legacy: a single Project payload (no Library wrapper)
+  try {
+    const raw = localStorage.getItem(LEGACY_FLAT_PROJECT_KEY);
+    if (raw) {
+      const legacy = JSON.parse(raw) as Project;
+      const wrapped: StoredProject = {
+        ...newStoredProject(
+          "Imported project",
+          userId,
+          username,
+          displayName,
+        ),
+        sprites: legacy.sprites,
+        selectedSpriteId: legacy.selectedSpriteId,
+        variables: legacy.variables,
+        broadcasts: legacy.broadcasts,
+      };
+      shared = {
+        ...shared,
+        projects: { ...shared.projects, [wrapped.id]: wrapped },
+        projectOrder: [wrapped.id, ...shared.projectOrder],
+      };
+      if (!preferredUserState) {
+        preferredUserState = { currentProjectId: wrapped.id, view: "editor" };
+      }
+      localStorage.removeItem(LEGACY_FLAT_PROJECT_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // First-ever load: seed a starter project so the editor has something to show.
+  if (shared.projectOrder.length === 0) {
+    const seed = newStoredProject(
+      "My first project",
+      userId,
+      username,
+      displayName,
+    );
+    shared = {
+      ...shared,
+      projects: { ...shared.projects, [seed.id]: seed },
+      projectOrder: [seed.id, ...shared.projectOrder],
+    };
+    if (!preferredUserState) {
+      preferredUserState = { currentProjectId: seed.id, view: "editor" };
+    }
+  }
+
+  return { shared, preferredUserState };
+}
+
+function loadUserState(
+  userId: string,
+  fallback: UserState,
+  shared: SharedLibrary,
+): UserState {
+  try {
+    const raw = localStorage.getItem(userStateKey(userId));
+    if (raw) {
+      const parsed = JSON.parse(raw) as UserState;
+      const currentProjectId =
+        parsed.currentProjectId && shared.projects[parsed.currentProjectId]
+          ? parsed.currentProjectId
+          : fallback.currentProjectId;
       return {
-        projects: { [wrapped.id]: wrapped },
-        projectOrder: [wrapped.id],
-        studios: {},
-        studioOrder: [],
-        currentProjectId: wrapped.id,
-        view: "editor",
-        authorName: "you",
+        currentProjectId,
+        view: parsed.view === "explore" ? "explore" : "editor",
       };
     }
   } catch {
     /* ignore */
   }
-  return defaultLibrary();
+  return fallback;
 }
 
-/* --------------------------- pure tree helpers --------------------------- */
+/* --------------------------- pure helpers --------------------------- */
 
 function withProject(
-  lib: Library,
+  lib: SharedLibrary,
   projectId: string,
   fn: (p: StoredProject) => StoredProject,
-): Library {
+): SharedLibrary {
   const cur = lib.projects[projectId];
   if (!cur) return lib;
   const next = fn(cur);
@@ -197,13 +303,6 @@ function withProject(
       [projectId]: { ...next, updatedAt: Date.now() },
     },
   };
-}
-
-function withCurrent(
-  lib: Library,
-  fn: (p: StoredProject) => StoredProject,
-): Library {
-  return withProject(lib, lib.currentProjectId, fn);
 }
 
 function withSprite(
@@ -247,6 +346,23 @@ function cloneBlock(b: BlockInstance, newIds = false): BlockInstance {
   if (b.body) out.body = b.body.map((c) => cloneBlock(c, newIds));
   if (b.body2) out.body2 = b.body2.map((c) => cloneBlock(c, newIds));
   return out;
+}
+
+function cloneProject(p: StoredProject): StoredProject {
+  return {
+    ...p,
+    sprites: p.sprites.map((s) => ({
+      ...s,
+      stacks: s.stacks.map((st) => ({
+        id: st.id,
+        blocks: st.blocks.map((b) => cloneBlock(b)),
+      })),
+    })),
+    variables: p.variables.map((v) => ({ ...v })),
+    broadcasts: p.broadcasts.map((b) => ({ ...b })),
+    comments: p.comments.map((c) => ({ ...c })),
+    studioIds: [...p.studioIds],
+  };
 }
 
 function mutateBlock(
@@ -344,10 +460,29 @@ function insertIntoStack(
   return { ...stack, blocks: next };
 }
 
+function asView(p: StoredProject): Project {
+  return {
+    sprites: p.sprites,
+    selectedSpriteId: p.selectedSpriteId,
+    variables: p.variables,
+    broadcasts: p.broadcasts,
+  };
+}
+
+function mergeView(p: StoredProject, v: Project): StoredProject {
+  return {
+    ...p,
+    sprites: v.sprites,
+    selectedSpriteId: v.selectedSpriteId,
+    variables: v.variables,
+    broadcasts: v.broadcasts,
+  };
+}
+
 /* --------------------------- context --------------------------- */
 
 export type ProjectContextValue = {
-  library: Library;
+  library: SharedLibrary;
   project: StoredProject;
   selectedSprite: Sprite;
   runtime: Runtime;
@@ -355,7 +490,11 @@ export type ProjectContextValue = {
   threadTick: number;
   view: LibraryView;
 
-  // view + library
+  /** Whether the *current* user owns the currently-open project. */
+  isOwner: boolean;
+  currentUserId: string;
+
+  // view + project lifecycle
   setView: (view: LibraryView) => void;
   createProject: (name?: string) => string;
   openProject: (id: string) => void;
@@ -373,6 +512,7 @@ export type ProjectContextValue = {
   // comments
   addComment: (projectId: string, text: string) => void;
   deleteComment: (projectId: string, commentId: string) => void;
+  canDeleteComment: (projectId: string, commentId: string) => boolean;
 
   // sprites
   addSprite: () => void;
@@ -410,40 +550,77 @@ const Ctx = createContext<ProjectContextValue | null>(null);
 
 export function ProjectProvider({
   userId,
-  authorName,
+  username,
+  displayName,
   children,
 }: {
   userId: string;
-  authorName: string;
+  username: string;
+  displayName: string;
   children: ReactNode;
 }) {
-  const [library, setLibrary] = useState<Library>(() => loadLibrary(userId));
-  const libraryRef = useRef(library);
-  libraryRef.current = library;
-
-  // Pre-computed `Project` view for the runtime (the runtime only knows the
-  // narrower runtime-state fields).
-  const projectViewRef = useRef<Project>({
-    sprites: [],
-    selectedSpriteId: "",
-    variables: [],
-    broadcasts: [],
-  });
-
-  // Keep the runtime-facing view in sync with the active project.
-  const currentProject = useMemo(
-    () =>
-      library.projects[library.currentProjectId] ??
-      library.projects[library.projectOrder[0] ?? ""] ??
-      newStoredProject("Recovery"),
-    [library],
+  /* --- one-time migration + initial state --- */
+  const initial = useMemo(
+    () => {
+      const { shared, preferredUserState } = migrate(
+        userId,
+        username,
+        displayName,
+      );
+      const fallback: UserState = {
+        currentProjectId:
+          preferredUserState?.currentProjectId ??
+          shared.projectOrder[0] ??
+          "",
+        view: "editor",
+      };
+      const us = loadUserState(userId, fallback, shared);
+      return { shared, userState: us };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [userId],
   );
-  projectViewRef.current = {
-    sprites: currentProject.sprites,
-    selectedSpriteId: currentProject.selectedSpriteId,
-    variables: currentProject.variables,
-    broadcasts: currentProject.broadcasts,
-  };
+
+  const [library, setLibrary] = useState<SharedLibrary>(initial.shared);
+  const [userState, setUserState] = useState<UserState>(initial.userState);
+  /** Local clone used when the active user is NOT the project owner. */
+  const [previewProject, setPreviewProject] = useState<StoredProject | null>(
+    () => {
+      const p = initial.shared.projects[initial.userState.currentProjectId];
+      if (p && p.ownerId && p.ownerId !== userId) return cloneProject(p);
+      return null;
+    },
+  );
+
+  /* --- derived current project --- */
+
+  const fallbackProject = useMemo<StoredProject>(
+    () =>
+      newStoredProject("(no project)", userId, username, displayName),
+    [userId, username, displayName],
+  );
+
+  const currentProject: StoredProject =
+    previewProject ??
+    library.projects[userState.currentProjectId] ??
+    library.projects[library.projectOrder[0] ?? ""] ??
+    fallbackProject;
+
+  const isOwner =
+    !!currentProject.ownerId && currentProject.ownerId === userId;
+
+  /* --- refs for runtime --- */
+
+  const projectViewRef = useRef<Project>(asView(currentProject));
+  projectViewRef.current = asView(currentProject);
+  const isOwnerRef = useRef(isOwner);
+  isOwnerRef.current = isOwner;
+  const currentIdRef = useRef(userState.currentProjectId);
+  currentIdRef.current = userState.currentProjectId;
+  const authorRef = useRef({ userId, username, displayName });
+  authorRef.current = { userId, username, displayName };
+
+  /* --- runtime --- */
 
   const [threadTick, bumpThreads] = useReducer((x: number) => x + 1, 0);
 
@@ -452,216 +629,266 @@ export function ProjectProvider({
     runtimeRef.current = new Runtime(
       () => projectViewRef.current,
       (updater) => {
-        setLibrary((lib) => {
-          const cur = lib.projects[lib.currentProjectId];
-          if (!cur) return lib;
-          const view: Project = {
-            sprites: cur.sprites,
-            selectedSpriteId: cur.selectedSpriteId,
-            variables: cur.variables,
-            broadcasts: cur.broadcasts,
-          };
-          const updated = updater(view);
-          return withProject(lib, cur.id, (p) => ({
-            ...p,
-            sprites: updated.sprites,
-            selectedSpriteId: updated.selectedSpriteId,
-            variables: updated.variables,
-            broadcasts: updated.broadcasts,
-          }));
-        });
+        if (isOwnerRef.current) {
+          setLibrary((lib) => {
+            const cur = lib.projects[currentIdRef.current];
+            if (!cur) return lib;
+            const next = updater(asView(cur));
+            return withProject(lib, cur.id, (p) => mergeView(p, next));
+          });
+        } else {
+          setPreviewProject((prev) => {
+            if (!prev) return prev;
+            const next = updater(asView(prev));
+            return mergeView(prev, next);
+          });
+        }
       },
     );
     runtimeRef.current.onThreadsChanged = bumpThreads;
   }
   const runtime = runtimeRef.current;
 
+  /* --- persistence --- */
+
   useEffect(() => {
     try {
-      localStorage.setItem(libraryStorageKey(userId), JSON.stringify(library));
+      localStorage.setItem(SHARED_LIBRARY_KEY, JSON.stringify(library));
     } catch {
-      /* quota — ignore */
+      /* ignore */
     }
-  }, [library, userId]);
+  }, [library]);
 
-  /* ------------- view + library ops ------------- */
+  useEffect(() => {
+    try {
+      localStorage.setItem(userStateKey(userId), JSON.stringify(userState));
+    } catch {
+      /* ignore */
+    }
+  }, [userState, userId]);
+
+  /* ---------- view + project lifecycle ---------- */
 
   const setView = useCallback(
     (view: LibraryView) => {
-      // Stop any threads when leaving the editor.
       if (view !== "editor") runtime.stopAll();
-      setLibrary((lib) => ({ ...lib, view }));
+      setUserState((u) => ({ ...u, view }));
     },
     [runtime],
   );
-
-  const createProject = useCallback((name?: string): string => {
-    const p = newStoredProject(name?.trim() || "Untitled project");
-    setLibrary((lib) => ({
-      ...lib,
-      projects: { ...lib.projects, [p.id]: p },
-      projectOrder: [p.id, ...lib.projectOrder],
-      currentProjectId: p.id,
-      view: "editor",
-    }));
-    return p.id;
-  }, []);
 
   const openProject = useCallback(
     (id: string) => {
       runtime.stopAll();
-      setLibrary((lib) =>
-        lib.projects[id]
-          ? { ...lib, currentProjectId: id, view: "editor" }
-          : lib,
-      );
+      setUserState((u) => ({ ...u, currentProjectId: id, view: "editor" }));
+      // Reset preview based on ownership.
+      setPreviewProject(() => {
+        const p = library.projects[id];
+        if (p && p.ownerId && p.ownerId !== userId) return cloneProject(p);
+        return null;
+      });
     },
-    [runtime],
+    [runtime, library, userId],
   );
 
-  const renameProject = useCallback((id: string, name: string) => {
-    const clean = name.trim();
-    if (!clean) return;
-    setLibrary((lib) =>
-      withProject(lib, id, (p) => ({ ...p, name: clean })),
-    );
-  }, []);
+  const createProject = useCallback(
+    (name?: string): string => {
+      const p = newStoredProject(
+        name?.trim() || "Untitled project",
+        userId,
+        username,
+        displayName,
+      );
+      setLibrary((lib) => ({
+        ...lib,
+        projects: { ...lib.projects, [p.id]: p },
+        projectOrder: [p.id, ...lib.projectOrder],
+      }));
+      setUserState((u) => ({
+        ...u,
+        currentProjectId: p.id,
+        view: "editor",
+      }));
+      setPreviewProject(null);
+      return p.id;
+    },
+    [userId, username, displayName],
+  );
 
-  const updateProjectDescription = useCallback((id: string, description: string) => {
-    setLibrary((lib) =>
-      withProject(lib, id, (p) => ({ ...p, description })),
-    );
-  }, []);
+  const renameProject = useCallback(
+    (id: string, name: string) => {
+      const clean = name.trim();
+      if (!clean) return;
+      setLibrary((lib) => {
+        const p = lib.projects[id];
+        if (!p || p.ownerId !== userId) return lib;
+        return withProject(lib, id, (cur) => ({ ...cur, name: clean }));
+      });
+    },
+    [userId],
+  );
+
+  const updateProjectDescription = useCallback(
+    (id: string, description: string) => {
+      setLibrary((lib) => {
+        const p = lib.projects[id];
+        if (!p || p.ownerId !== userId) return lib;
+        return withProject(lib, id, (cur) => ({ ...cur, description }));
+      });
+    },
+    [userId],
+  );
 
   const deleteProject = useCallback(
     (id: string) => {
-      runtime.stopAll();
       setLibrary((lib) => {
-        if (!lib.projects[id]) return lib;
-        const order = lib.projectOrder.filter((pid) => pid !== id);
+        const p = lib.projects[id];
+        if (!p || p.ownerId !== userId) return lib;
         const { [id]: _removed, ...rest } = lib.projects;
         void _removed;
-        let nextProjects = rest;
-        let nextOrder = order;
-        // Always keep at least one project.
-        if (nextOrder.length === 0) {
-          const p = newStoredProject("Untitled project");
-          nextProjects = { [p.id]: p };
-          nextOrder = [p.id];
-        }
-        const currentProjectId =
-          lib.currentProjectId === id
-            ? nextOrder[0] ?? ""
-            : lib.currentProjectId;
         return {
           ...lib,
-          projects: nextProjects,
-          projectOrder: nextOrder,
-          currentProjectId,
+          projects: rest,
+          projectOrder: lib.projectOrder.filter((pid) => pid !== id),
+        };
+      });
+      // If we deleted the current project, fall back to the first remaining one.
+      setUserState((u) => {
+        if (u.currentProjectId !== id) return u;
+        return u; // updated below via effect
+      });
+    },
+    [userId],
+  );
+
+  // If currentProjectId no longer points at a real project, move to the first one.
+  useEffect(() => {
+    if (!library.projects[userState.currentProjectId]) {
+      const next = library.projectOrder[0] ?? "";
+      if (next !== userState.currentProjectId) {
+        setUserState((u) => ({ ...u, currentProjectId: next }));
+      }
+    }
+  }, [library, userState.currentProjectId]);
+
+  const duplicateProject = useCallback(
+    (id: string): string => {
+      const src = library.projects[id];
+      if (!src) return "";
+      const copy: StoredProject = {
+        ...cloneProject(src),
+        id: randomId(),
+        name: `${src.name} (copy)`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        comments: [],
+        ownerId: userId,
+        ownerUsername: username,
+        ownerDisplayName: displayName,
+        sprites: src.sprites.map((s) => ({
+          ...s,
+          stacks: s.stacks.map((st) => ({
+            id: randomId(),
+            blocks: st.blocks.map((b) => cloneBlock(b, true)),
+          })),
+        })),
+      };
+      setLibrary((lib) => ({
+        ...lib,
+        projects: { ...lib.projects, [copy.id]: copy },
+        projectOrder: [copy.id, ...lib.projectOrder],
+      }));
+      return copy.id;
+    },
+    [library, userId, username, displayName],
+  );
+
+  /* ---------- studios ---------- */
+
+  const createStudio = useCallback(
+    (name: string): string => {
+      const clean = name.trim();
+      if (!clean) return "";
+      const s: Studio = {
+        id: randomId(),
+        name: clean,
+        description: "",
+        createdAt: Date.now(),
+        ownerId: userId,
+        ownerUsername: username,
+      };
+      setLibrary((lib) => ({
+        ...lib,
+        studios: { ...lib.studios, [s.id]: s },
+        studioOrder: [...lib.studioOrder, s.id],
+      }));
+      return s.id;
+    },
+    [userId, username],
+  );
+
+  const renameStudio = useCallback(
+    (id: string, name: string) => {
+      const clean = name.trim();
+      if (!clean) return;
+      setLibrary((lib) => {
+        const s = lib.studios[id];
+        if (!s) return lib;
+        // Only studio owner (or legacy ones with no owner) can rename.
+        if (s.ownerId && s.ownerId !== userId) return lib;
+        return {
+          ...lib,
+          studios: { ...lib.studios, [id]: { ...s, name: clean } },
         };
       });
     },
-    [runtime],
+    [userId],
   );
 
-  const duplicateProject = useCallback((id: string): string => {
-    const src = libraryRef.current.projects[id];
-    if (!src) return "";
-    const copy: StoredProject = {
-      ...src,
-      id: randomId(),
-      name: `${src.name} (copy)`,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      comments: [],
-      // Deep clone block trees so block IDs don't collide.
-      sprites: src.sprites.map((s) => ({
-        ...s,
-        stacks: s.stacks.map((st) => ({
-          id: randomId(),
-          blocks: st.blocks.map((b) => cloneBlock(b, true)),
-        })),
-      })),
-    };
-    setLibrary((lib) => ({
-      ...lib,
-      projects: { ...lib.projects, [copy.id]: copy },
-      projectOrder: [copy.id, ...lib.projectOrder],
-    }));
-    return copy.id;
-  }, []);
-
-  /* ------------- studios ------------- */
-
-  const createStudio = useCallback((name: string): string => {
-    const clean = name.trim();
-    if (!clean) return "";
-    const s: Studio = {
-      id: randomId(),
-      name: clean,
-      description: "",
-      createdAt: Date.now(),
-    };
-    setLibrary((lib) => ({
-      ...lib,
-      studios: { ...lib.studios, [s.id]: s },
-      studioOrder: [...lib.studioOrder, s.id],
-    }));
-    return s.id;
-  }, []);
-
-  const renameStudio = useCallback((id: string, name: string) => {
-    const clean = name.trim();
-    if (!clean) return;
-    setLibrary((lib) => {
-      const s = lib.studios[id];
-      if (!s) return lib;
-      return {
-        ...lib,
-        studios: { ...lib.studios, [id]: { ...s, name: clean } },
-      };
-    });
-  }, []);
-
-  const deleteStudio = useCallback((id: string) => {
-    setLibrary((lib) => {
-      const { [id]: _removed, ...rest } = lib.studios;
-      void _removed;
-      return {
-        ...lib,
-        studios: rest,
-        studioOrder: lib.studioOrder.filter((sid) => sid !== id),
-        projects: Object.fromEntries(
-          Object.entries(lib.projects).map(([pid, p]) => [
-            pid,
-            { ...p, studioIds: p.studioIds.filter((s) => s !== id) },
-          ]),
-        ),
-      };
-    });
-  }, []);
+  const deleteStudio = useCallback(
+    (id: string) => {
+      setLibrary((lib) => {
+        const s = lib.studios[id];
+        if (!s) return lib;
+        if (s.ownerId && s.ownerId !== userId) return lib;
+        const { [id]: _removed, ...rest } = lib.studios;
+        void _removed;
+        return {
+          ...lib,
+          studios: rest,
+          studioOrder: lib.studioOrder.filter((sid) => sid !== id),
+          projects: Object.fromEntries(
+            Object.entries(lib.projects).map(([pid, p]) => [
+              pid,
+              { ...p, studioIds: p.studioIds.filter((sx) => sx !== id) },
+            ]),
+          ),
+        };
+      });
+    },
+    [userId],
+  );
 
   const toggleStudioMembership = useCallback(
     (projectId: string, studioId: string) => {
-      setLibrary((lib) =>
-        withProject(lib, projectId, (p) => {
-          const has = p.studioIds.includes(studioId);
-          return {
-            ...p,
-            studioIds: has
-              ? p.studioIds.filter((s) => s !== studioId)
-              : [...p.studioIds, studioId],
-          };
-        }),
-      );
+      setLibrary((lib) => {
+        const p = lib.projects[projectId];
+        if (!p) return lib;
+        // Only the project owner can change which studios it belongs to.
+        if (p.ownerId !== userId) return lib;
+        const has = p.studioIds.includes(studioId);
+        return withProject(lib, projectId, (cur) => ({
+          ...cur,
+          studioIds: has
+            ? cur.studioIds.filter((s) => s !== studioId)
+            : [...cur.studioIds, studioId],
+        }));
+      });
     },
-    [],
+    [userId],
   );
 
-  /* ------------- comments ------------- */
-
-  const authorRef = useRef(authorName);
-  authorRef.current = authorName;
+  /* ---------- comments ---------- */
 
   const addComment = useCallback(
     (projectId: string, text: string) => {
@@ -670,7 +897,9 @@ export function ProjectProvider({
       const c: Comment = {
         id: randomId(),
         text: clean,
-        author: authorRef.current || "you",
+        author: authorRef.current.displayName || "you",
+        authorId: authorRef.current.userId,
+        authorUsername: authorRef.current.username,
         createdAt: Date.now(),
       };
       setLibrary((lib) =>
@@ -679,95 +908,145 @@ export function ProjectProvider({
           comments: [...p.comments, c],
         })),
       );
-    },
-    [],
-  );
-
-  const deleteComment = useCallback(
-    (projectId: string, commentId: string) => {
-      setLibrary((lib) =>
-        withProject(lib, projectId, (p) => ({
-          ...p,
-          comments: p.comments.filter((c) => c.id !== commentId),
-        })),
+      // If non-owner is currently viewing this project, mirror to preview so UI updates.
+      setPreviewProject((prev) =>
+        prev && prev.id === projectId
+          ? { ...prev, comments: [...prev.comments, c] }
+          : prev,
       );
     },
     [],
   );
 
-  /* ------------- sprite ops (operate on current project) ------------- */
+  const canDeleteComment = useCallback(
+    (projectId: string, commentId: string): boolean => {
+      const p = library.projects[projectId];
+      if (!p) return false;
+      const c = p.comments.find((x) => x.id === commentId);
+      if (!c) return false;
+      if (p.ownerId === userId) return true;
+      if (c.authorId && c.authorId === userId) return true;
+      return false;
+    },
+    [library, userId],
+  );
 
-  const selectSprite = useCallback((id: string) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
-        p.sprites.some((s) => s.id === id) ? { ...p, selectedSpriteId: id } : p,
-      ),
-    );
-  }, []);
+  const deleteComment = useCallback(
+    (projectId: string, commentId: string) => {
+      setLibrary((lib) => {
+        const p = lib.projects[projectId];
+        if (!p) return lib;
+        const c = p.comments.find((x) => x.id === commentId);
+        if (!c) return lib;
+        const allowed =
+          p.ownerId === userId || (c.authorId && c.authorId === userId);
+        if (!allowed) return lib;
+        return withProject(lib, projectId, (cur) => ({
+          ...cur,
+          comments: cur.comments.filter((x) => x.id !== commentId),
+        }));
+      });
+      setPreviewProject((prev) =>
+        prev && prev.id === projectId
+          ? { ...prev, comments: prev.comments.filter((c) => c.id !== commentId) }
+          : prev,
+      );
+    },
+    [userId],
+  );
+
+  /* ---------- owner-gated mutation helper ---------- */
+
+  /** Apply `mutator` to the current project iff the active user owns it. */
+  const editCurrentProject = useCallback(
+    (mutator: (p: StoredProject) => StoredProject) => {
+      if (!isOwnerRef.current) return;
+      setLibrary((lib) => {
+        const cur = lib.projects[currentIdRef.current];
+        if (!cur || cur.ownerId !== userId) return lib;
+        return withProject(lib, cur.id, mutator);
+      });
+    },
+    [userId],
+  );
+
+  /* ---------- sprite ops ---------- */
+
+  const selectSprite = useCallback(
+    (id: string) => {
+      // Selection is allowed for anyone (it's part of the view).
+      if (isOwnerRef.current) {
+        editCurrentProject((p) =>
+          p.sprites.some((s) => s.id === id) ? { ...p, selectedSpriteId: id } : p,
+        );
+      } else {
+        setPreviewProject((prev) =>
+          prev && prev.sprites.some((s) => s.id === id)
+            ? { ...prev, selectedSpriteId: id }
+            : prev,
+        );
+      }
+    },
+    [editCurrentProject],
+  );
 
   const addSprite = useCallback(() => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) => {
-        const emojis = [
-          "🐶",
-          "🦊",
-          "🦄",
-          "🤖",
-          "👻",
-          "🐙",
-          "🐲",
-          "🐸",
-          "🐵",
-          "🐝",
-        ];
-        const idx = p.sprites.length;
-        const emoji = emojis[idx % emojis.length] ?? "✨";
-        const sprite = makeSprite(`Sprite ${idx + 1}`, emoji);
-        return {
-          ...p,
-          sprites: [...p.sprites, sprite],
-          selectedSpriteId: sprite.id,
-        };
-      }),
-    );
-  }, []);
+    editCurrentProject((p) => {
+      const emojis = [
+        "🐶", "🦊", "🦄", "🤖", "👻", "🐙", "🐲", "🐸", "🐵", "🐝",
+      ];
+      const idx = p.sprites.length;
+      const emoji = emojis[idx % emojis.length] ?? "✨";
+      const sprite = makeSprite(`Sprite ${idx + 1}`, emoji);
+      return {
+        ...p,
+        sprites: [...p.sprites, sprite],
+        selectedSpriteId: sprite.id,
+      };
+    });
+  }, [editCurrentProject]);
 
-  const renameSprite = useCallback((id: string, name: string) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
+  const renameSprite = useCallback(
+    (id: string, name: string) => {
+      editCurrentProject((p) =>
         withSprite(p, id, (s) => ({ ...s, name: name.trim() || s.name })),
-      ),
-    );
-  }, []);
+      );
+    },
+    [editCurrentProject],
+  );
 
-  const setSpriteCostume = useCallback((id: string, costume: string) => {
-    const trimmed = (costume || "").slice(0, 4) || "❓";
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
+  const setSpriteCostume = useCallback(
+    (id: string, costume: string) => {
+      const trimmed = (costume || "").slice(0, 4) || "❓";
+      editCurrentProject((p) =>
         withSprite(p, id, (s) => ({ ...s, costume: trimmed })),
-      ),
-    );
-  }, []);
+      );
+    },
+    [editCurrentProject],
+  );
 
-  const deleteSprite = useCallback((id: string) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) => {
+  const deleteSprite = useCallback(
+    (id: string) => {
+      editCurrentProject((p) => {
         if (p.sprites.length <= 1) return p;
         const next = p.sprites.filter((s) => s.id !== id);
         const head = next[0];
         const selectedSpriteId =
-          p.selectedSpriteId === id ? (head ? head.id : "") : p.selectedSpriteId;
+          p.selectedSpriteId === id
+            ? head
+              ? head.id
+              : ""
+            : p.selectedSpriteId;
         return { ...p, sprites: next, selectedSpriteId };
-      }),
-    );
-  }, []);
+      });
+    },
+    [editCurrentProject],
+  );
 
   const spriteClicked = useCallback(
     (id: string) => {
-      const cur =
-        libraryRef.current.projects[libraryRef.current.currentProjectId];
-      if (!cur) return;
-      const sprite = cur.sprites.find((s) => s.id === id);
+      const cp = currentProject;
+      const sprite = cp.sprites.find((s) => s.id === id);
       if (!sprite) return;
       for (const stack of sprite.stacks) {
         const hat = stack.blocks[0];
@@ -776,16 +1055,16 @@ export function ProjectProvider({
         }
       }
     },
-    [runtime],
+    [currentProject, runtime],
   );
 
-  /* ------------- variables / broadcasts ------------- */
+  /* ---------- variables / broadcasts ---------- */
 
-  const addVariable = useCallback((name: string) => {
-    const clean = name.trim();
-    if (!clean) return;
-    setLibrary((lib) =>
-      withCurrent(lib, (p) => {
+  const addVariable = useCallback(
+    (name: string) => {
+      const clean = name.trim();
+      if (!clean) return;
+      editCurrentProject((p) => {
         if (p.variables.some((v) => v.name === clean)) return p;
         const v: Variable = {
           id: randomId(),
@@ -794,52 +1073,55 @@ export function ProjectProvider({
           visible: true,
         };
         return { ...p, variables: [...p.variables, v] };
-      }),
-    );
-  }, []);
+      });
+    },
+    [editCurrentProject],
+  );
 
-  const deleteVariable = useCallback((id: string) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) => ({
+  const deleteVariable = useCallback(
+    (id: string) => {
+      editCurrentProject((p) => ({
         ...p,
         variables: p.variables.filter((v) => v.id !== id),
-      })),
-    );
-  }, []);
+      }));
+    },
+    [editCurrentProject],
+  );
 
-  const addBroadcast = useCallback((name: string): string => {
-    const clean = name.trim();
-    if (!clean) return "";
-    setLibrary((lib) =>
-      withCurrent(lib, (p) => {
+  const addBroadcast = useCallback(
+    (name: string): string => {
+      const clean = name.trim();
+      if (!clean) return "";
+      editCurrentProject((p) => {
         if (p.broadcasts.some((b) => b.name === clean)) return p;
         const b: Broadcast = { id: randomId(), name: clean };
         return { ...p, broadcasts: [...p.broadcasts, b] };
-      }),
-    );
-    return clean;
-  }, []);
+      });
+      return clean;
+    },
+    [editCurrentProject],
+  );
 
-  const deleteBroadcast = useCallback((id: string) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) => ({
+  const deleteBroadcast = useCallback(
+    (id: string) => {
+      editCurrentProject((p) => ({
         ...p,
         broadcasts: p.broadcasts.filter((b) => b.id !== id),
-      })),
-    );
-  }, []);
+      }));
+    },
+    [editCurrentProject],
+  );
 
-  /* ------------- block ops ------------- */
+  /* ---------- block ops ---------- */
 
-  const addBlock = useCallback((defId: string, target: InsertTarget) => {
-    const def = getBlockDef(defId);
-    if (!def) return;
-    if (def.shape === "reporter" || def.shape === "boolean") return;
-    const block = makeBlockInstance(defId);
-    if (!block) return;
-
-    setLibrary((lib) =>
-      withCurrent(lib, (project) => {
+  const addBlock = useCallback(
+    (defId: string, target: InsertTarget) => {
+      const def = getBlockDef(defId);
+      if (!def) return;
+      if (def.shape === "reporter" || def.shape === "boolean") return;
+      const block = makeBlockInstance(defId);
+      if (!block) return;
+      editCurrentProject((project) => {
         const spriteId = project.selectedSpriteId;
         if (!project.sprites.some((s) => s.id === spriteId)) return project;
 
@@ -850,7 +1132,6 @@ export function ProjectProvider({
             stacks: [...s.stacks, stack],
           }));
         }
-
         if (target.kind === "stackEnd") {
           return updateStackInProject(project, spriteId, target.stackId, (s) =>
             insertIntoStack(s, s.blocks.length, block),
@@ -871,15 +1152,16 @@ export function ProjectProvider({
             block,
           ),
         }));
-      }),
-    );
-  }, []);
+      });
+    },
+    [editCurrentProject],
+  );
 
-  const insertReporter = useCallback((target: InputRef, defId: string) => {
-    const inst = makeBlockInstance(defId);
-    if (!inst) return;
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
+  const insertReporter = useCallback(
+    (target: InputRef, defId: string) => {
+      const inst = makeBlockInstance(defId);
+      if (!inst) return;
+      editCurrentProject((p) =>
         updateStackInProject(p, target.spriteId, target.stackId, (s) => ({
           ...s,
           blocks: mutateBlock(s.blocks, target.path, (b) => ({
@@ -890,13 +1172,14 @@ export function ProjectProvider({
             },
           })),
         })),
-      ),
-    );
-  }, []);
+      );
+    },
+    [editCurrentProject],
+  );
 
-  const clearReporter = useCallback((target: InputRef) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
+  const clearReporter = useCallback(
+    (target: InputRef) => {
+      editCurrentProject((p) =>
         updateStackInProject(p, target.spriteId, target.stackId, (s) => ({
           ...s,
           blocks: mutateBlock(s.blocks, target.path, (b) => {
@@ -914,33 +1197,32 @@ export function ProjectProvider({
             };
           }),
         })),
-      ),
-    );
-  }, []);
+      );
+    },
+    [editCurrentProject],
+  );
 
   const updateInputLiteral = useCallback(
     (target: InputRef, value: string) => {
-      setLibrary((lib) =>
-        withCurrent(lib, (p) =>
-          updateStackInProject(p, target.spriteId, target.stackId, (s) => ({
-            ...s,
-            blocks: mutateBlock(s.blocks, target.path, (b) => ({
-              ...b,
-              inputs: {
-                ...b.inputs,
-                [target.inputKey]: { kind: "literal", value },
-              },
-            })),
+      editCurrentProject((p) =>
+        updateStackInProject(p, target.spriteId, target.stackId, (s) => ({
+          ...s,
+          blocks: mutateBlock(s.blocks, target.path, (b) => ({
+            ...b,
+            inputs: {
+              ...b.inputs,
+              [target.inputKey]: { kind: "literal", value },
+            },
           })),
-        ),
+        })),
       );
     },
-    [],
+    [editCurrentProject],
   );
 
-  const updateField = useCallback((target: FieldRef, value: string) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
+  const updateField = useCallback(
+    (target: FieldRef, value: string) => {
+      editCurrentProject((p) =>
         updateStackInProject(p, target.spriteId, target.stackId, (s) => ({
           ...s,
           blocks: mutateBlock(s.blocks, target.path, (b) => ({
@@ -948,25 +1230,27 @@ export function ProjectProvider({
             fields: { ...b.fields, [target.fieldKey]: value },
           })),
         })),
-      ),
-    );
-  }, []);
+      );
+    },
+    [editCurrentProject],
+  );
 
-  const removeBlock = useCallback((target: BlockRef) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
+  const removeBlock = useCallback(
+    (target: BlockRef) => {
+      editCurrentProject((p) =>
         updateStackInProject(p, target.spriteId, target.stackId, (s) => {
           const next = removeBlockAt(s.blocks, target.path);
           if (next.length === 0) return null;
           return { ...s, blocks: next };
         }),
-      ),
-    );
-  }, []);
+      );
+    },
+    [editCurrentProject],
+  );
 
-  const moveBlock = useCallback((from: BlockRef, to: InsertTarget) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (project) => {
+  const moveBlock = useCallback(
+    (from: BlockRef, to: InsertTarget) => {
+      editCurrentProject((project) => {
         const sprite = project.sprites.find((s) => s.id === from.spriteId);
         if (!sprite) return project;
         const fromStack = sprite.stacks.find((s) => s.id === from.stackId);
@@ -1026,29 +1310,29 @@ export function ProjectProvider({
             clone,
           ),
         }));
-      }),
-    );
-  }, []);
+      });
+    },
+    [editCurrentProject],
+  );
 
-  const deleteStack = useCallback((stackId: string) => {
-    setLibrary((lib) =>
-      withCurrent(lib, (p) =>
+  const deleteStack = useCallback(
+    (stackId: string) => {
+      editCurrentProject((p) =>
         withSprite(p, p.selectedSpriteId, (s) => ({
           ...s,
           stacks: s.stacks.filter((st) => st.id !== stackId),
         })),
-      ),
-    );
-  }, []);
+      );
+    },
+    [editCurrentProject],
+  );
 
-  /* ------------- execution ------------- */
+  /* ---------- execution ---------- */
 
   const greenFlag = useCallback(() => {
-    const cur =
-      libraryRef.current.projects[libraryRef.current.currentProjectId];
-    if (!cur) return;
+    const cp = currentProject;
     let spawned = 0;
-    for (const sprite of cur.sprites) {
+    for (const sprite of cp.sprites) {
       for (const stack of sprite.stacks) {
         const hat = stack.blocks[0];
         if (hat?.defId === "event_flag") {
@@ -1058,7 +1342,7 @@ export function ProjectProvider({
       }
     }
     if (spawned === 0) {
-      for (const sprite of cur.sprites) {
+      for (const sprite of cp.sprites) {
         for (const stack of sprite.stacks) {
           const hat = stack.blocks[0];
           const def = hat ? getBlockDef(hat.defId) : undefined;
@@ -1068,7 +1352,7 @@ export function ProjectProvider({
         }
       }
     }
-  }, [runtime]);
+  }, [currentProject, runtime]);
 
   const stopAll = useCallback(() => {
     runtime.stopAll();
@@ -1076,10 +1360,8 @@ export function ProjectProvider({
 
   const keyPressed = useCallback(
     (key: string) => {
-      const cur =
-        libraryRef.current.projects[libraryRef.current.currentProjectId];
-      if (!cur) return;
-      for (const sprite of cur.sprites) {
+      const cp = currentProject;
+      for (const sprite of cp.sprites) {
         for (const stack of sprite.stacks) {
           const hat = stack.blocks[0];
           if (hat?.defId === "event_keypress" && hat.fields.key === key) {
@@ -1088,7 +1370,7 @@ export function ProjectProvider({
         }
       }
     },
-    [runtime],
+    [currentProject, runtime],
   );
 
   const setMouse = useCallback(
@@ -1111,7 +1393,7 @@ export function ProjectProvider({
       const k = normalizeKey(e);
       if (!k) return;
       runtime.setKeyPressed(k, true);
-      if (libraryRef.current.view === "editor") keyPressed(k);
+      if (userState.view === "editor") keyPressed(k);
     };
     const onKeyUp = (e: KeyboardEvent) => {
       const k = normalizeKey(e);
@@ -1124,7 +1406,7 @@ export function ProjectProvider({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [runtime, keyPressed]);
+  }, [runtime, keyPressed, userState.view]);
 
   const selectedSprite = useMemo(() => {
     const found = currentProject.sprites.find(
@@ -1142,7 +1424,9 @@ export function ProjectProvider({
       runtime,
       running: runtime.isRunning,
       threadTick,
-      view: library.view,
+      view: userState.view,
+      isOwner,
+      currentUserId: userId,
 
       setView,
       createProject,
@@ -1151,27 +1435,23 @@ export function ProjectProvider({
       updateProjectDescription,
       deleteProject,
       duplicateProject,
-
       createStudio,
       renameStudio,
       deleteStudio,
       toggleStudioMembership,
-
       addComment,
       deleteComment,
-
+      canDeleteComment,
       addSprite,
       selectSprite,
       renameSprite,
       setSpriteCostume,
       deleteSprite,
       spriteClicked,
-
       addVariable,
       deleteVariable,
       addBroadcast,
       deleteBroadcast,
-
       addBlock,
       insertReporter,
       clearReporter,
@@ -1180,7 +1460,6 @@ export function ProjectProvider({
       removeBlock,
       moveBlock,
       deleteStack,
-
       greenFlag,
       stopAll,
       keyPressed,
@@ -1193,6 +1472,9 @@ export function ProjectProvider({
       selectedSprite,
       runtime,
       threadTick,
+      userState.view,
+      isOwner,
+      userId,
       setView,
       createProject,
       openProject,
@@ -1206,6 +1488,7 @@ export function ProjectProvider({
       toggleStudioMembership,
       addComment,
       deleteComment,
+      canDeleteComment,
       addSprite,
       selectSprite,
       renameSprite,

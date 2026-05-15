@@ -1,7 +1,7 @@
 # Software Requirements Document (SRD)
 
 **System:** Scratch Web
-**Version:** 0.4
+**Version:** 0.5
 **Last updated:** 2026-05-15
 
 ## System overview
@@ -15,7 +15,7 @@ Single-page **Vite + React + TypeScript** app. Client-only; persistence via `loc
 3. **Runtime** (`src/engine/runtime.ts`) — schedules cooperative async **threads**, one per hat invocation, with shared mutable state surfaced via `setProject`. Tracks pressed keys, mouse, timer.
 4. **Interpreter** (`src/engine/interpreter.ts`) — recursive evaluator. `execBlock` for statements, `evalInput` / `evalBlock` for reporters.
 5. **Auth state** (`src/state/AuthContext.tsx`) — local accounts with PBKDF2-hashed passwords and a persistent session.
-6. **Library state** (`src/state/ProjectContext.tsx`) — the active user's library (every project, studios, comments, selection, view). Auto-saves to `localStorage` under `scratch-web/library/<userId>`. Legacy keys (`scratch-web/library`, `scratch-web/project`) are migrated to the first signed-up user on first load.
+6. **Library state** (`src/state/ProjectContext.tsx`) — the **shared library** (all projects, all studios, all comments) auto-saves to `scratch-web/shared-library`. Each user's UI state (which project is open, editor vs. explore) saves separately to `scratch-web/user-state/<userId>`. Older keys (`scratch-web/library/<userId>` from v0.4, `scratch-web/library` from v0.3, `scratch-web/project` from v0.2) are migrated into the shared library on first load and then deleted, tagging migrated projects/studios/comments with the migrating user as their owner/author.
 
 ## Coordinate system
 
@@ -65,28 +65,34 @@ Single-page **Vite + React + TypeScript** app. Client-only; persistence via `loc
 
 ### FR-7 Library, Explore & Search
 
-- A **library** holds many projects. Each project has `name`, `description`, `createdAt`, `updatedAt`, `studioIds`, and a list of `comments`.
-- The **Explore** view shows a grid of project cards (thumbnail emoji, sprite & block counts, last-updated date, studio chips, comment count).
-- A **search box** filters projects by name, description, sprite name, or comment text (case-insensitive substring).
-- Per-card actions: **Open**, **duplicate**, **delete**, **rename** (double-click name).
+- A single **shared library** holds every project on this browser. Each project has `name`, `description`, `createdAt`, `updatedAt`, `studioIds`, `comments`, and **owner fields** (`ownerId`, `ownerUsername`, `ownerDisplayName`).
+- The **Explore** view shows a grid of project cards (thumbnail emoji, sprite & block counts, last-updated date, studio chips, comment count, **creator badge**).
+- The sidebar offers an "All projects" / "My projects" filter; the **search box** filters by name, description, sprite name, comment text, **owner display name**, and **owner username** (case-insensitive substring).
+- Per-card actions: **Open** (anyone), **duplicate** (anyone — the copy is owned by the duplicator), **delete** (creator only), **rename** via double-click (creator only).
 
 ### FR-8 Studios
 
-- Users can create, rename, and delete **studios**. A project can be added to / removed from any studio via a chip on the project card.
-- The studios sidebar in Explore filters the grid by clicked studio (or shows all).
+- Anyone can **create** a studio; the creator is stamped as the studio's `ownerId`.
+- Only the studio's creator can **rename** or **delete** it. Other users see those buttons disabled.
+- A project can be added to / removed from any studio via a chip on its card — but only by the **project's creator** (it's their project's metadata).
 - Deleting a studio does **not** delete its projects.
 
 ### FR-9 Comments
 
-- Each project has a list of **comments** (id, text, author, createdAt).
-- Comments are authored under a user-editable **display name** stored on the library (no auth).
-- Users can post and delete comments inside the editor (and the comment count surfaces in Explore).
+- Each project has a list of **comments** (`id`, `text`, `author`, `authorId?`, `authorUsername?`, `createdAt`).
+- **Anyone signed in** can post a comment on any project; new comments capture `authorId` and `authorUsername` from the current session.
+- A comment can be **deleted by its author** or by the **owner of the project it lives on**. Legacy comments (no `authorId`) can only be deleted by the project owner.
+- The comment count surfaces in Explore.
 
 ### FR-10 Persistence
 
-- The active user's library auto-saves to `localStorage` under `scratch-web/library/<userId>` on every change.
-- Legacy `scratch-web/library` and `scratch-web/project` payloads are migrated to the first signed-up user on first load.
-- Each project's `updatedAt` is bumped on every change to its content (including comments).
+- The **shared library** auto-saves to `scratch-web/shared-library` on every change.
+- Each user's UI state (`currentProjectId`, `view`) auto-saves to `scratch-web/user-state/<userId>`.
+- On first load, the provider migrates legacy keys into the shared library and then deletes them:
+  - `scratch-web/library/<userId>` (v0.4 per-user libraries) → merged, tagging projects/studios/comments with that user as creator.
+  - `scratch-web/library` (v0.3 single library) → merged, tagging with the currently-signed-in user.
+  - `scratch-web/project` (v0.2 flat project) → wrapped into a `StoredProject` owned by the current user.
+- Each project's `updatedAt` is bumped on every change to its content (including comments by other users).
 
 ### FR-11 Local accounts (sign up / sign in)
 
@@ -96,10 +102,26 @@ Single-page **Vite + React + TypeScript** app. Client-only; persistence via `loc
 - Password rules: 6–200 chars, hashed with **PBKDF2-SHA-256, 150 000 iterations, 16-byte salt, 256-bit key**; salt + hash + iteration count stored per user.
 - Sign-in compares hashes with a constant-time comparator.
 - **Session** is persisted to `scratch-web/session`; refresh keeps the user signed in.
-- Users can edit their **display name** at any time; existing comments keep the author string captured at post time.
-- **Sign out** clears the session but keeps the library for next sign-in.
+- Users can edit their **display name** at any time; existing projects/comments keep the snapshot captured at create/post time.
+- **Sign out** clears the session but keeps the shared library and the user record for next sign-in.
 
 > Limitations: there is **no server**. Anyone with access to the browser can read or wipe accounts and libraries via devtools. The system protects against casual cross-account access on a shared browser; it is not a security boundary.
+
+### FR-12 Ownership & access control
+
+- Every `StoredProject` carries `ownerId` (the userId of the creator), set at create-time. Migrated projects without an owner are stamped during migration (see FR-10).
+- The active user is the **owner** of the open project iff `project.ownerId === currentUser.id`. Otherwise the editor renders in **read-only mode**:
+  - The block palette is hidden.
+  - Block ×, drag handles, dropdowns, and literal inputs are non-interactive (statics).
+  - Drop zones on `ScriptsCanvas` and inside C-block bodies short-circuit on drop.
+  - Sprite tray hides `+ Sprite`, `×`, and the costume input; double-click rename is a no-op.
+  - The script-area empty state shows the creator's name.
+  - A "🔒 read-only · by …" badge is shown in the toolbar, and the project name is non-editable.
+- The runtime is **always** allowed for everyone: green flag, stop, key/mouse events, and `when this sprite clicked` work regardless of ownership.
+- All mutation operations on `ProjectContext` early-return when `currentUser.id !== ownerId`, including: `addBlock`, `removeBlock`, `moveBlock`, `insertReporter`, `clearReporter`, `updateInputLiteral`, `updateField`, `deleteStack`, `addSprite`, `renameSprite`, `setSpriteCostume`, `deleteSprite`, `addVariable`, `deleteVariable`, `addBroadcast`, `deleteBroadcast`, `renameProject`, `updateProjectDescription`, `deleteProject`, `toggleStudioMembership`.
+- For non-owners, **runtime mutations** (sprite x/y/direction/size/visible/sayText, variable values during play) are written to a **local preview copy** held only in React state; they do **not** persist to the shared library. Switching projects, signing out, or refreshing discards the preview state.
+- Studios: `renameStudio` / `deleteStudio` early-return unless the active user is the studio's `ownerId`. Legacy studios without an `ownerId` are treated as ownerless and editable by anyone.
+- Comments: `deleteComment` early-returns unless the active user is the comment's `authorId` or the project's `ownerId`.
 
 ## Block semantics
 
@@ -220,8 +242,15 @@ type Sprite = {
 type Variable = { id: string; name: string; value: string; visible: boolean };
 type Broadcast = { id: string; name: string };
 
-type Comment = { id: string; text: string; author: string; createdAt: number };
-type Studio = { id: string; name: string; description: string; createdAt: number };
+type Comment = {
+  id: string; text: string; author: string;
+  authorId?: string; authorUsername?: string;     // present on v0.5+
+  createdAt: number;
+};
+type Studio = {
+  id: string; name: string; description: string; createdAt: number;
+  ownerId?: string; ownerUsername?: string;        // present on v0.5+
+};
 
 type StoredProject = {
   id: string; name: string; description: string;
@@ -232,16 +261,21 @@ type StoredProject = {
   selectedSpriteId: string;
   variables: Variable[];
   broadcasts: Broadcast[];
+  ownerId?: string;                                // present on v0.5+
+  ownerUsername?: string;
+  ownerDisplayName?: string;
 };
 
-type Library = {
+type SharedLibrary = {
   projects: Record<string, StoredProject>;
   projectOrder: string[];
   studios: Record<string, Studio>;
   studioOrder: string[];
+};
+
+type UserState = {
   currentProjectId: string;
   view: "editor" | "explore";
-  authorName: string;  // legacy/vestigial; unused after v0.4
 };
 
 type User = {

@@ -3,7 +3,11 @@ import type { Broadcast, Sprite, Variable } from "./blocks";
 export type Comment = {
   id: string;
   text: string;
+  /** Display name captured at post time. Required for back-compat. */
   author: string;
+  /** Author userId, set on posts made after v0.5. May be absent on legacy data. */
+  authorId?: string;
+  authorUsername?: string;
   createdAt: number;
 };
 
@@ -12,6 +16,9 @@ export type Studio = {
   name: string;
   description: string;
   createdAt: number;
+  /** Creator userId. Optional only for back-compat with v0.3 data. */
+  ownerId?: string;
+  ownerUsername?: string;
 };
 
 export type StoredProject = {
@@ -26,17 +33,35 @@ export type StoredProject = {
   selectedSpriteId: string;
   variables: Variable[];
   broadcasts: Broadcast[];
+  /** Creator userId. Optional only for back-compat with v0.3/0.4 data. */
+  ownerId?: string;
+  ownerUsername?: string;
+  ownerDisplayName?: string;
 };
 
 export type LibraryView = "editor" | "explore";
 
-export type Library = {
+/** Shared library: all projects and studios visible to every account on this browser. */
+export type SharedLibrary = {
+  projects: Record<string, StoredProject>;
+  projectOrder: string[];
+  studios: Record<string, Studio>;
+  studioOrder: string[];
+};
+
+/** Per-user UI state (which project is open, which view). */
+export type UserState = {
+  currentProjectId: string;
+  view: LibraryView;
+};
+
+/** Legacy single-user library shape (used during migration). */
+export type LegacyLibrary = {
   projects: Record<string, StoredProject>;
   projectOrder: string[];
   studios: Record<string, Studio>;
   studioOrder: string[];
   currentProjectId: string;
   view: LibraryView;
-  /** Display name used as the author of new comments. */
-  authorName: string;
+  authorName?: string;
 };

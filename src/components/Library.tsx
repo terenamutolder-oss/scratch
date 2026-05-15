@@ -12,11 +12,11 @@ function fmtDate(ts: number): string {
 
 function countBlocks(p: StoredProject): number {
   let n = 0;
-  const walk = (blocks: { body?: any[]; body2?: any[] }[]) => {
-    for (const b of blocks as any[]) {
+  const walk = (blocks: Array<{ body?: unknown[]; body2?: unknown[] }>) => {
+    for (const b of blocks) {
       n += 1;
-      if (Array.isArray(b.body)) walk(b.body);
-      if (Array.isArray(b.body2)) walk(b.body2);
+      if (Array.isArray(b.body)) walk(b.body as typeof blocks);
+      if (Array.isArray(b.body2)) walk(b.body2 as typeof blocks);
     }
   };
   for (const s of p.sprites) {
@@ -28,6 +28,7 @@ function countBlocks(p: StoredProject): number {
 export default function Library() {
   const {
     library,
+    currentUserId,
     createProject,
     openProject,
     renameProject,
@@ -38,10 +39,13 @@ export default function Library() {
     deleteStudio,
     toggleStudioMembership,
     setView,
-  } = useLibraryData();
+  } = useProject();
+
+  const currentProjectId = useProject().project.id;
 
   const [search, setSearch] = useState("");
   const [studioFilter, setStudioFilter] = useState<string | null>(null);
+  const [ownerFilter, setOwnerFilter] = useState<"all" | "mine">("all");
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
@@ -51,6 +55,7 @@ export default function Library() {
       .filter((p): p is StoredProject => Boolean(p));
     const q = search.trim().toLowerCase();
     return list
+      .filter((p) => ownerFilter === "all" || p.ownerId === currentUserId)
       .filter((p) => !studioFilter || p.studioIds.includes(studioFilter))
       .filter((p) => {
         if (!q) return true;
@@ -58,9 +63,11 @@ export default function Library() {
         if (p.description.toLowerCase().includes(q)) return true;
         if (p.sprites.some((s) => s.name.toLowerCase().includes(q))) return true;
         if (p.comments.some((c) => c.text.toLowerCase().includes(q))) return true;
+        if (p.ownerDisplayName?.toLowerCase().includes(q)) return true;
+        if (p.ownerUsername?.toLowerCase().includes(q)) return true;
         return false;
       });
-  }, [library, search, studioFilter]);
+  }, [library, search, studioFilter, ownerFilter, currentUserId]);
 
   const studios = useMemo(
     () =>
@@ -73,21 +80,47 @@ export default function Library() {
   return (
     <div className="library">
       <aside className="library-sidebar">
-        <h3 className="panel-subtitle">Studios</h3>
+        <h3 className="panel-subtitle">Browse</h3>
         <ul className="studio-list">
           <li>
             <button
               type="button"
-              className={`studio-pill ${studioFilter === null ? "is-active" : ""}`}
-              onClick={() => setStudioFilter(null)}
+              className={`studio-pill ${ownerFilter === "all" && studioFilter === null ? "is-active" : ""}`}
+              onClick={() => {
+                setOwnerFilter("all");
+                setStudioFilter(null);
+              }}
             >
               All projects ({library.projectOrder.length})
             </button>
           </li>
+          <li>
+            <button
+              type="button"
+              className={`studio-pill ${ownerFilter === "mine" ? "is-active" : ""}`}
+              onClick={() => {
+                setOwnerFilter("mine");
+                setStudioFilter(null);
+              }}
+            >
+              My projects (
+              {
+                Object.values(library.projects).filter(
+                  (p) => p.ownerId === currentUserId,
+                ).length
+              }
+              )
+            </button>
+          </li>
+        </ul>
+
+        <h3 className="panel-subtitle">Studios</h3>
+        <ul className="studio-list">
           {studios.map((s) => {
             const count = Object.values(library.projects).filter((p) =>
               p.studioIds.includes(s.id),
             ).length;
+            const canEditStudio = !s.ownerId || s.ownerId === currentUserId;
             return (
               <li key={s.id}>
                 <button
@@ -96,7 +129,9 @@ export default function Library() {
                     studioFilter === s.id ? "is-active" : ""
                   }`}
                   onClick={() => setStudioFilter(s.id)}
-                  title={`Filter by ${s.name}`}
+                  title={`Filter by ${s.name}${
+                    s.ownerUsername ? ` (by @${s.ownerUsername})` : ""
+                  }`}
                 >
                   {s.name} <span className="muted">({count})</span>
                 </button>
@@ -104,7 +139,12 @@ export default function Library() {
                   <button
                     type="button"
                     className="btn btn-mini btn-ghost"
-                    title="Rename studio"
+                    title={
+                      canEditStudio
+                        ? "Rename studio"
+                        : "Only the studio creator can rename"
+                    }
+                    disabled={!canEditStudio}
                     onClick={(e) => {
                       e.stopPropagation();
                       const name = prompt("Rename studio", s.name);
@@ -116,10 +156,19 @@ export default function Library() {
                   <button
                     type="button"
                     className="btn btn-mini btn-ghost"
-                    title="Delete studio"
+                    title={
+                      canEditStudio
+                        ? "Delete studio"
+                        : "Only the studio creator can delete"
+                    }
+                    disabled={!canEditStudio}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm(`Delete the studio "${s.name}"? Projects stay; only this collection is removed.`)) {
+                      if (
+                        confirm(
+                          `Delete the studio "${s.name}"? Projects stay; only this collection is removed.`,
+                        )
+                      ) {
                         deleteStudio(s.id);
                         if (studioFilter === s.id) setStudioFilter(null);
                       }
@@ -160,7 +209,7 @@ export default function Library() {
           <input
             type="search"
             className="library-search"
-            placeholder="Search projects, sprites, comments…"
+            placeholder="Search projects, sprites, comments, creators…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -198,11 +247,14 @@ export default function Library() {
             {projects.map((p) => {
               const blockCount = countBlocks(p);
               const firstSprite = p.sprites[0];
-              const isCurrent = library.currentProjectId === p.id;
+              const isCurrent = currentProjectId === p.id;
+              const isMine = p.ownerId === currentUserId;
               return (
                 <li
                   key={p.id}
-                  className={`project-card ${isCurrent ? "is-current" : ""}`}
+                  className={`project-card ${isCurrent ? "is-current" : ""} ${
+                    isMine ? "" : "is-foreign"
+                  }`}
                 >
                   <button
                     type="button"
@@ -214,9 +266,14 @@ export default function Library() {
                       {firstSprite?.costume ?? "🧩"}
                     </span>
                     <span className="project-card-meta">
-                      <span>{p.sprites.length} sprite{p.sprites.length === 1 ? "" : "s"}</span>
+                      <span>
+                        {p.sprites.length} sprite
+                        {p.sprites.length === 1 ? "" : "s"}
+                      </span>
                       <span>·</span>
-                      <span>{blockCount} block{blockCount === 1 ? "" : "s"}</span>
+                      <span>
+                        {blockCount} block{blockCount === 1 ? "" : "s"}
+                      </span>
                     </span>
                   </button>
 
@@ -245,18 +302,41 @@ export default function Library() {
                         type="button"
                         className="project-card-name"
                         onDoubleClick={() => {
+                          if (!isMine) return;
                           setRenamingProjectId(p.id);
                           setRenameValue(p.name);
                         }}
                         onClick={() => openProject(p.id)}
-                        title="Open. Double-click to rename."
+                        title={
+                          isMine
+                            ? "Open. Double-click to rename."
+                            : `By ${p.ownerDisplayName ?? "—"} — open to view/run`
+                        }
                       >
                         {p.name}
                       </button>
                     )}
                     <p className="project-card-date">
-                      Updated {fmtDate(p.updatedAt)} · {p.comments.length} comment
-                      {p.comments.length === 1 ? "" : "s"}
+                      <span
+                        className={`owner-badge ${isMine ? "owner-badge--mine" : ""}`}
+                        title={
+                          isMine
+                            ? "You created this project"
+                            : `Created by ${p.ownerDisplayName ?? "—"}${
+                                p.ownerUsername ? ` (@${p.ownerUsername})` : ""
+                              }`
+                        }
+                      >
+                        {isMine
+                          ? "you"
+                          : `by ${p.ownerDisplayName ?? "—"}`}
+                      </span>
+                      <span className="muted"> · Updated {fmtDate(p.updatedAt)}</span>
+                      <span className="muted">
+                        {" · "}
+                        {p.comments.length} comment
+                        {p.comments.length === 1 ? "" : "s"}
+                      </span>
                     </p>
                     <div className="project-card-studios">
                       {studios.map((s) => {
@@ -266,11 +346,14 @@ export default function Library() {
                             key={s.id}
                             type="button"
                             className={`studio-chip ${inStudio ? "is-on" : ""}`}
+                            disabled={!isMine}
                             onClick={() => toggleStudioMembership(p.id, s.id)}
                             title={
-                              inStudio
-                                ? `Remove from "${s.name}"`
-                                : `Add to "${s.name}"`
+                              isMine
+                                ? inStudio
+                                  ? `Remove from "${s.name}"`
+                                  : `Add to "${s.name}"`
+                                : "Only the project creator can change studios"
                             }
                           >
                             {s.name}
@@ -292,23 +375,28 @@ export default function Library() {
                       type="button"
                       className="btn btn-mini btn-ghost"
                       onClick={() => duplicateProject(p.id)}
-                      title="Duplicate"
+                      title="Duplicate (the copy will be yours)"
                     >
                       duplicate
                     </button>
                     <button
                       type="button"
                       className="btn btn-mini btn-ghost"
+                      disabled={!isMine}
                       onClick={() => {
                         if (
                           confirm(
-                            `Delete "${p.name}"? This can’t be undone.`,
+                            `Delete "${p.name}"? This can't be undone.`,
                           )
                         ) {
                           deleteProject(p.id);
                         }
                       }}
-                      title="Delete"
+                      title={
+                        isMine
+                          ? "Delete"
+                          : "Only the creator can delete this project"
+                      }
                     >
                       delete
                     </button>
@@ -321,21 +409,4 @@ export default function Library() {
       </section>
     </div>
   );
-}
-
-function useLibraryData() {
-  const ctx = useProject();
-  return {
-    library: ctx.library,
-    createProject: ctx.createProject,
-    openProject: ctx.openProject,
-    renameProject: ctx.renameProject,
-    deleteProject: ctx.deleteProject,
-    duplicateProject: ctx.duplicateProject,
-    createStudio: ctx.createStudio,
-    renameStudio: ctx.renameStudio,
-    deleteStudio: ctx.deleteStudio,
-    toggleStudioMembership: ctx.toggleStudioMembership,
-    setView: ctx.setView,
-  };
 }

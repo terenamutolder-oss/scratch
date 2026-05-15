@@ -5,6 +5,7 @@ export default function SpriteTray() {
   const {
     project,
     selectedSprite,
+    isOwner,
     addSprite,
     selectSprite,
     renameSprite,
@@ -19,14 +20,16 @@ export default function SpriteTray() {
     <div className="sprite-tray">
       <div className="sprite-tray-header">
         <h2 className="panel-title">Sprites</h2>
-        <button
-          type="button"
-          className="btn btn-mini"
-          onClick={addSprite}
-          title="Add a sprite"
-        >
-          + Sprite
-        </button>
+        {isOwner ? (
+          <button
+            type="button"
+            className="btn btn-mini"
+            onClick={addSprite}
+            title="Add a sprite"
+          >
+            + Sprite
+          </button>
+        ) : null}
       </div>
 
       <ul className="sprite-list">
@@ -41,7 +44,7 @@ export default function SpriteTray() {
             <div className="sprite-card-emoji" aria-hidden>
               {s.costume}
             </div>
-            {editingId === s.id ? (
+            {editingId === s.id && isOwner ? (
               <form
                 className="sprite-card-form"
                 onSubmit={(e) => {
@@ -68,6 +71,7 @@ export default function SpriteTray() {
                 className="sprite-card-name"
                 onDoubleClick={(e) => {
                   e.stopPropagation();
+                  if (!isOwner) return;
                   setEditingId(s.id);
                   setEditingName(s.name);
                 }}
@@ -75,12 +79,12 @@ export default function SpriteTray() {
                   e.stopPropagation();
                   selectSprite(s.id);
                 }}
-                title="Double-click to rename"
+                title={isOwner ? "Double-click to rename" : "Read-only"}
               >
                 {s.name}
               </button>
             )}
-            {project.sprites.length > 1 ? (
+            {isOwner && project.sprites.length > 1 ? (
               <button
                 type="button"
                 className="btn btn-mini btn-ghost sprite-card-delete"
@@ -104,16 +108,25 @@ export default function SpriteTray() {
             className="sprite-costume-input"
             value={selectedSprite.costume}
             maxLength={4}
+            readOnly={!isOwner}
+            disabled={!isOwner}
             onChange={(e) =>
               setSpriteCostume(selectedSprite.id, e.target.value)
             }
-            title="Emoji or up to 4 characters"
+            title={
+              isOwner ? "Emoji or up to 4 characters" : "Only the creator can edit"
+            }
           />
           <div className="sprite-costume-preview" aria-hidden>
             {selectedSprite.costume}
           </div>
         </div>
-        <p className="hint">Position: x={Math.round(selectedSprite.x)}, y={Math.round(selectedSprite.y)} · dir={Math.round(selectedSprite.direction)}° · size={Math.round(selectedSprite.size)}%</p>
+        <p className="hint">
+          Position: x={Math.round(selectedSprite.x)}, y=
+          {Math.round(selectedSprite.y)} · dir=
+          {Math.round(selectedSprite.direction)}° · size=
+          {Math.round(selectedSprite.size)}%
+        </p>
       </div>
     </div>
   );

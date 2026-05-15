@@ -13,7 +13,7 @@ function fmtTime(ts: number): string {
 }
 
 export default function CommentsPanel() {
-  const { project, addComment, deleteComment } = useProject();
+  const { project, addComment, deleteComment, canDeleteComment } = useProject();
   const { currentUser } = useAuth();
   const [text, setText] = useState("");
 
@@ -52,23 +52,33 @@ export default function CommentsPanel() {
         ) : (
           [...project.comments]
             .sort((a, b) => b.createdAt - a.createdAt)
-            .map((c) => (
-              <li key={c.id} className="comment-item">
-                <div className="comment-head">
-                  <span className="comment-author">{c.author || "you"}</span>
-                  <span className="comment-time">{fmtTime(c.createdAt)}</span>
-                  <button
-                    type="button"
-                    className="comment-delete"
-                    title="Delete comment"
-                    onClick={() => deleteComment(project.id, c.id)}
-                  >
-                    ×
-                  </button>
-                </div>
-                <p className="comment-text">{c.text}</p>
-              </li>
-            ))
+            .map((c) => {
+              const canDelete = canDeleteComment(project.id, c.id);
+              return (
+                <li key={c.id} className="comment-item">
+                  <div className="comment-head">
+                    <span className="comment-author">
+                      {c.author || "you"}
+                      {c.authorUsername ? (
+                        <span className="muted"> @{c.authorUsername}</span>
+                      ) : null}
+                    </span>
+                    <span className="comment-time">{fmtTime(c.createdAt)}</span>
+                    {canDelete ? (
+                      <button
+                        type="button"
+                        className="comment-delete"
+                        title="Delete comment"
+                        onClick={() => deleteComment(project.id, c.id)}
+                      >
+                        ×
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="comment-text">{c.text}</p>
+                </li>
+              );
+            })
         )}
       </ul>
     </section>

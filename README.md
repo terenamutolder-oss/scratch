@@ -7,14 +7,16 @@ It is local-first: every project, studio, and comment lives in your browser's `l
 ## Features
 
 - **Local accounts** (sign-up / sign-in) — usernames + PBKDF2-hashed passwords stored in this browser. Not a real auth system; see *Caveats* below.
+- **Shared library + per-project ownership**: every account on this browser sees the same set of projects, but **only the creator can edit or delete** their own project. Everyone else can open it, run it, comment on it, and duplicate it (the copy becomes theirs).
 - **Editor** with 7 block categories (Motion, Looks, Events, Control, Sensing, Operators, Variables) and all block shapes (hat / stack / C / E / cap / reporter / boolean).
 - **Multi-sprite**: add, rename, select, delete sprites; each sprite has its own scripts.
 - **Multi-stack threading**: hat-triggered scripts run in parallel (green flag, sprite click, key press, broadcast).
 - **Nested reporter/boolean blocks** drag into input slots.
 - **Variables** with on-stage monitors.
-- **Library / Explore** view: search projects, organize them into **studios**.
-- **Comments** on each project, authored under a free-form display name.
-- **Auto-save** of the entire library to `localStorage`.
+- **Library / Explore** view with `All` / `My projects` filters, owner badges, and per-project / per-comment delete permissions.
+- **Studios**: anyone can create one; only the creator can rename/delete it. Project creators control which studios their projects belong to.
+- **Comments**: anyone can post; you can delete your own, and project owners can delete any comment on their project.
+- **Auto-save** of the entire shared library to `localStorage`, plus per-user UI state (which project is open).
 
 ## Stack
 
@@ -48,6 +50,7 @@ npm run preview # preview the production build
 - Multi-costume animation per sprite (one editable emoji/text glyph).
 - `.sb3` import/export.
 - **Real authentication** (see below).
+- **Real authorisation.** The "only the creator can edit" rule is enforced client-side. Someone editing `localStorage` directly can grant themselves ownership of any project. The check exists to keep accounts from accidentally stepping on each other, not as a security boundary.
 - Networked collaboration.
 
 ## Caveats: the local-only login system

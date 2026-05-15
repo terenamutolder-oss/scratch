@@ -10,11 +10,13 @@ import { readDragPayload } from "./dndPayload";
 import BlockView from "./BlockView";
 
 export default function ScriptsCanvas() {
-  const { selectedSprite, addBlock, moveBlock, deleteStack } = useProject();
+  const { selectedSprite, isOwner, project, addBlock, moveBlock, deleteStack } =
+    useProject();
 
   const handleEmptyDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!isOwner) return;
     const payload = readDragPayload(e.dataTransfer);
     if (!payload) return;
     if (payload.source === "palette") {
@@ -36,19 +38,38 @@ export default function ScriptsCanvas() {
 
   return (
     <div
-      className="scripts-shell"
-      onDragOver={(e) => e.preventDefault()}
+      className={`scripts-shell ${isOwner ? "" : "is-readonly"}`}
+      onDragOver={(e) => {
+        if (!isOwner) return;
+        e.preventDefault();
+      }}
       onDrop={handleEmptyDrop}
     >
       {selectedSprite.stacks.length === 0 ? (
         <div className="scripts-empty">
-          <p>
-            <strong>Drop blocks here</strong> to start a script for{" "}
-            <strong>{selectedSprite.name}</strong>.
-          </p>
-          <p className="scripts-empty-hint">
-            Or double-click a block in the palette.
-          </p>
+          {isOwner ? (
+            <>
+              <p>
+                <strong>Drop blocks here</strong> to start a script for{" "}
+                <strong>{selectedSprite.name}</strong>.
+              </p>
+              <p className="scripts-empty-hint">
+                Or double-click a block in the palette.
+              </p>
+            </>
+          ) : (
+            <>
+              <p>
+                <strong>{selectedSprite.name}</strong> has no scripts yet.
+              </p>
+              <p className="scripts-empty-hint">
+                This project was created by{" "}
+                <strong>{project.ownerDisplayName ?? "another user"}</strong>.
+                Only the creator can edit it — but you can run it from the
+                toolbar.
+              </p>
+            </>
+          )}
         </div>
       ) : (
         <div className="scripts-canvas">
@@ -56,19 +77,22 @@ export default function ScriptsCanvas() {
             <StackView
               key={stack.id}
               stack={stack}
+              canEdit={isOwner}
               onDeleteStack={() => deleteStack(stack.id)}
             />
           ))}
-          <div
-            className="scripts-canvas-newstack"
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-            onDrop={handleEmptyDrop}
-          >
-            <span>Drop a hat or stack block here to start another script</span>
-          </div>
+          {isOwner ? (
+            <div
+              className="scripts-canvas-newstack"
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onDrop={handleEmptyDrop}
+            >
+              <span>Drop a hat or stack block here to start another script</span>
+            </div>
+          ) : null}
         </div>
       )}
     </div>
@@ -77,9 +101,11 @@ export default function ScriptsCanvas() {
 
 function StackView({
   stack,
+  canEdit,
   onDeleteStack,
 }: {
   stack: Stack;
+  canEdit: boolean;
   onDeleteStack: () => void;
 }) {
   const { selectedSprite, addBlock, moveBlock } = useProject();
@@ -93,6 +119,7 @@ function StackView({
   const onDropAt = (index: number) => (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!canEdit) return;
     const payload = readDragPayload(e.dataTransfer);
     if (!payload) return;
     if (payload.source === "palette") {
@@ -114,17 +141,19 @@ function StackView({
 
   return (
     <div className="stack">
-      <div className="stack-toolbar">
-        <button
-          type="button"
-          className="btn btn-mini btn-ghost"
-          title="Delete this entire script"
-          onClick={onDeleteStack}
-        >
-          delete script
-        </button>
-      </div>
-      <DropStripe onDrop={onDropAt(0)} />
+      {canEdit ? (
+        <div className="stack-toolbar">
+          <button
+            type="button"
+            className="btn btn-mini btn-ghost"
+            title="Delete this entire script"
+            onClick={onDeleteStack}
+          >
+            delete script
+          </button>
+        </div>
+      ) : null}
+      {canEdit ? <DropStripe onDrop={onDropAt(0)} /> : null}
       {stack.blocks.map((block, idx) => {
         const def = getBlockDef(block.defId);
         if (!def) return null;
@@ -139,7 +168,7 @@ function StackView({
               stackId={stack.id}
               path={path}
             />
-            <DropStripe onDrop={onDropAt(idx + 1)} />
+            {canEdit ? <DropStripe onDrop={onDropAt(idx + 1)} /> : null}
           </Fragment>
         );
       })}
