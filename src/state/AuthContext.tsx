@@ -9,7 +9,9 @@ import {
 } from "react";
 import {
   AUTH_STORAGE_KEY,
+  GUEST_USER_ID,
   SESSION_STORAGE_KEY,
+  isGuestUserId,
   type Session,
   type User,
   type UsersStore,
@@ -113,6 +115,20 @@ function saveUsers(store: UsersStore) {
   }
 }
 
+function syntheticGuestUser(): User {
+  return {
+    id: GUEST_USER_ID,
+    username: "guest",
+    displayName: "Guest",
+    passwordSalt: "",
+    passwordHash: "",
+    iterations: 0,
+    createdAt: 0,
+    lastLoginAt: 0,
+    isGuest: true,
+  };
+}
+
 function loadSession(): Session | null {
   try {
     const raw = localStorage.getItem(SESSION_STORAGE_KEY);
@@ -164,6 +180,8 @@ export type AuthContextValue = {
   ready: boolean;
   currentUser: User | null;
   userCount: number;
+  /** Open the editor immediately without username/password; data is still local-only. */
+  continueAsGuest: () => void;
   signUp: (input: {
     username: string;
     displayName: string;
@@ -195,15 +213,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const currentUser = useMemo<User | null>(() => {
     if (!session) return null;
+    if (isGuestUserId(session.userId)) return syntheticGuestUser();
     return users.users[session.userId] ?? null;
   }, [session, users]);
 
   // If session points at a missing user (e.g., user deleted in another tab), drop it.
   useEffect(() => {
-    if (session && !users.users[session.userId]) {
+    if (
+      session &&
+      !isGuestUserId(session.userId) &&
+      !users.users[session.userId]
+    ) {
       setSession(null);
     }
   }, [session, users]);
+
+  const continueAsGuest = useCallback(() => {
+    setSession({ userId: GUEST_USER_ID, startedAt: Date.now() });
+  }, []);
 
   const signUp = useCallback<AuthContextValue["signUp"]>(
     async ({ username, displayName, password }) => {
@@ -288,12 +315,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ready,
       currentUser,
       userCount: Object.keys(users.users).length,
+      continueAsGuest,
       signUp,
       signIn,
       signOut,
       updateDisplayName,
     }),
-    [ready, currentUser, users, signUp, signIn, signOut, updateDisplayName],
+    [
+      ready,
+      currentUser,
+      users,
+      continueAsGuest,
+      signUp,
+      signIn,
+      signOut,
+      updateDisplayName,
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

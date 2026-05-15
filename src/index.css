@@ -1452,3 +1452,29 @@ input[disabled] {
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+.auth-guest-row {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-border);
+  text-align: center;
+}
+
+.auth-guest-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.auth-guest-hint {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.user-menu-hint {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.35;
+}

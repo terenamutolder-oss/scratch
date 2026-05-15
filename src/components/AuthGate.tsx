@@ -4,7 +4,7 @@ import { useAuth } from "../state/AuthContext";
 type Mode = "signin" | "signup";
 
 export default function AuthGate() {
-  const { userCount, signIn, signUp } = useAuth();
+  const { userCount, signIn, signUp, continueAsGuest } = useAuth();
   const initialMode: Mode = userCount === 0 ? "signup" : "signin";
   const [mode, setMode] = useState<Mode>(initialMode);
   const [username, setUsername] = useState("");
@@ -51,9 +51,9 @@ export default function AuthGate() {
           <p className="brand-tag">
             {mode === "signup"
               ? userCount === 0
-                ? "Create the first account on this browser."
-                : "Create a new local account."
-              : "Sign in to your local account."}
+                ? "Sign up, or jump straight in as a guest."
+                : "Create a new local account, or continue as guest."
+              : "Sign in to your local account — or try as guest."}
           </p>
         </div>
       </header>
@@ -143,6 +143,20 @@ export default function AuthGate() {
           accounts and projects. This is not a real authentication system —
           don't reuse a sensitive password here.
         </p>
+
+        <div className="auth-guest-row">
+          <button
+            type="button"
+            className="btn btn-ghost auth-guest-btn"
+            onClick={() => continueAsGuest()}
+          >
+            Continue without an account
+          </button>
+          <p className="auth-guest-hint">
+            Build and run projects on this device. Guest projects are shared in
+            the same library as signed-in users on this browser.
+          </p>
+        </div>
       </form>
     </div>
   );

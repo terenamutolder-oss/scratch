@@ -6,7 +6,7 @@ It is local-first: every project, studio, and comment lives in your browser's `l
 
 ## Features
 
-- **Local accounts** (sign-up / sign-in) — usernames + PBKDF2-hashed passwords stored in this browser. Not a real auth system; see *Caveats* below.
+- **Local accounts** (sign-up / sign-in) — usernames + PBKDF2-hashed passwords stored in this browser. **Guest mode:** open the editor immediately with "Continue without an account". Not a real auth system; see *Caveats* below.
 - **Shared library + per-project ownership**: every account on this browser sees the same set of projects, but **only the creator can edit or delete** their own project. Everyone else can open it, run it, comment on it, and duplicate it (the copy becomes theirs).
 - **Editor** with 7 block categories (Motion, Looks, Events, Control, Sensing, Operators, Variables) and all block shapes (hat / stack / C / E / cap / reporter / boolean).
 - **Multi-sprite**: add, rename, select, delete sprites; each sprite has its own scripts.

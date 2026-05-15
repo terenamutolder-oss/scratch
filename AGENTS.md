@@ -46,7 +46,7 @@ Single source of truth for how to work on this repo. Product intent lives in `do
 - **Ownership rule of thumb:** if a UI control changes saved data, gate it on `isOwner` (from `useProject()`) — disable it or hide it. If it only triggers runtime behaviour (green flag, click-on-stage, key press), leave it available.
 - **Persistence:**
   - **Users:** `scratch-web/users` (record map + username index).
-  - **Session:** `scratch-web/session` (active userId).
+  - **Session:** `scratch-web/session` (active userId, or the stable guest id `__scratch_guest__` when using guest mode).
   - **Shared library:** `scratch-web/shared-library` (all projects + studios across accounts on this browser). Every project carries `ownerId` / `ownerUsername` / `ownerDisplayName`; every studio carries `ownerId` / `ownerUsername`; every comment carries `authorId` / `authorUsername`.
   - **Per-user UI state:** `scratch-web/user-state/<userId>` (`currentProjectId`, `view`).
   - **Migration:** v0.4 `scratch-web/library/<userId>`, v0.3 `scratch-web/library`, and v0.2 `scratch-web/project` are merged into the shared library on first load (tagging the migrating user as creator) and then deleted.

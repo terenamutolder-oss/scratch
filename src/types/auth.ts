@@ -1,9 +1,18 @@
+/** Stable id for “continue without an account”; not stored in `UsersStore`. */
+export const GUEST_USER_ID = "__scratch_guest__";
+
+export function isGuestUserId(userId: string): boolean {
+  return userId === GUEST_USER_ID;
+}
+
 export type User = {
   id: string;
   /** Lowercased canonical username (login handle). */
   username: string;
   /** Display name shown in the UI; editable later. */
   displayName: string;
+  /** True for the synthetic guest profile (no password; not in `UsersStore`). */
+  isGuest?: boolean;
   /** Hex-encoded PBKDF2 salt. */
   passwordSalt: string;
   /** Hex-encoded PBKDF2 hash. */

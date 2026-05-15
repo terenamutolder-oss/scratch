@@ -39,10 +39,19 @@ export default function UserMenu() {
       {open ? (
         <div className="user-menu-popover" role="menu">
           <p className="user-menu-row">
-            <span className="muted">Signed in as</span>
-            <strong>@{currentUser.username}</strong>
+            <span className="muted">
+              {currentUser.isGuest ? "Using" : "Signed in as"}
+            </span>
+            <strong>
+              {currentUser.isGuest ? currentUser.displayName : `@${currentUser.username}`}
+            </strong>
           </p>
-          {editing ? (
+          {currentUser.isGuest ? (
+            <p className="user-menu-hint">
+              Guest mode — no password. Sign out and use Sign up if you want a
+              named profile on this browser.
+            </p>
+          ) : editing ? (
             <form
               className="user-menu-row"
               onSubmit={(e) => {
@@ -82,7 +91,7 @@ export default function UserMenu() {
               signOut();
             }}
           >
-            Sign out
+            {currentUser.isGuest ? "Leave guest mode" : "Sign out"}
           </button>
         </div>
       ) : null}
