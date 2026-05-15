@@ -1,7 +1,7 @@
 # Software Requirements Document (SRD)
 
 **System:** Scratch Web
-**Version:** 0.3
+**Version:** 0.4
 **Last updated:** 2026-05-15
 
 ## System overview
@@ -14,7 +14,8 @@ Single-page **Vite + React + TypeScript** app. Client-only; persistence via `loc
 2. **Block instance tree** (`src/types/blocks.ts`) — `BlockInstance` with `inputs` (literal or nested block), `fields` (dropdown selections), and optional `body` / `body2` for C/E blocks.
 3. **Runtime** (`src/engine/runtime.ts`) — schedules cooperative async **threads**, one per hat invocation, with shared mutable state surfaced via `setProject`. Tracks pressed keys, mouse, timer.
 4. **Interpreter** (`src/engine/interpreter.ts`) — recursive evaluator. `execBlock` for statements, `evalInput` / `evalBlock` for reporters.
-5. **Library state** (`src/state/ProjectContext.tsx`) — the entire library (every project, studios, comments, current selection, current view). Auto-saves to `localStorage` under `scratch-web/library`. Legacy single-project storage at `scratch-web/project` is migrated on first load.
+5. **Auth state** (`src/state/AuthContext.tsx`) — local accounts with PBKDF2-hashed passwords and a persistent session.
+6. **Library state** (`src/state/ProjectContext.tsx`) — the active user's library (every project, studios, comments, selection, view). Auto-saves to `localStorage` under `scratch-web/library/<userId>`. Legacy keys (`scratch-web/library`, `scratch-web/project`) are migrated to the first signed-up user on first load.
 
 ## Coordinate system
 
@@ -83,9 +84,22 @@ Single-page **Vite + React + TypeScript** app. Client-only; persistence via `loc
 
 ### FR-10 Persistence
 
-- The full library auto-saves to `localStorage` under `scratch-web/library` on every change.
-- A legacy single-project payload at `scratch-web/project` is migrated into a one-project library on first load.
+- The active user's library auto-saves to `localStorage` under `scratch-web/library/<userId>` on every change.
+- Legacy `scratch-web/library` and `scratch-web/project` payloads are migrated to the first signed-up user on first load.
 - Each project's `updatedAt` is bumped on every change to its content (including comments).
+
+### FR-11 Local accounts (sign up / sign in)
+
+- The first time the app loads with no users, an empty **Sign-up form** is shown.
+- Subsequent sessions show a **Sign-in form** with a link to switch to sign-up.
+- Username rules: 2–24 chars, `[a-z0-9._-]`, lowercased canonically (display is case-preserving on the username field, the canonical form is stored).
+- Password rules: 6–200 chars, hashed with **PBKDF2-SHA-256, 150 000 iterations, 16-byte salt, 256-bit key**; salt + hash + iteration count stored per user.
+- Sign-in compares hashes with a constant-time comparator.
+- **Session** is persisted to `scratch-web/session`; refresh keeps the user signed in.
+- Users can edit their **display name** at any time; existing comments keep the author string captured at post time.
+- **Sign out** clears the session but keeps the library for next sign-in.
+
+> Limitations: there is **no server**. Anyone with access to the browser can read or wipe accounts and libraries via devtools. The system protects against casual cross-account access on a shared browser; it is not a security boundary.
 
 ## Block semantics
 
@@ -227,8 +241,21 @@ type Library = {
   studioOrder: string[];
   currentProjectId: string;
   view: "editor" | "explore";
-  authorName: string;
+  authorName: string;  // legacy/vestigial; unused after v0.4
 };
+
+type User = {
+  id: string;
+  username: string;          // canonical (lowercased) login handle
+  displayName: string;       // human-readable, editable
+  passwordSalt: string;      // hex, 16 bytes
+  passwordHash: string;      // hex, 32 bytes (PBKDF2-SHA-256)
+  iterations: number;        // 150_000 today
+  createdAt: number;
+  lastLoginAt: number;
+};
+
+type Session = { userId: string; startedAt: number };
 ```
 
 ## Non-functional

@@ -38,7 +38,6 @@ export default function Library() {
     deleteStudio,
     toggleStudioMembership,
     setView,
-    authorName: _author,
   } = useLibraryData();
 
   const [search, setSearch] = useState("");
@@ -328,7 +327,6 @@ function useLibraryData() {
   const ctx = useProject();
   return {
     library: ctx.library,
-    authorName: ctx.library.authorName,
     createProject: ctx.createProject,
     openProject: ctx.openProject,
     renameProject: ctx.renameProject,

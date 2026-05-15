@@ -1,7 +1,7 @@
 # Product Requirements Document (PRD)
 
 **Product:** Scratch Web (browser block-coding playground)
-**Version:** 0.3
+**Version:** 0.4
 **Last updated:** 2026-05-15
 
 ## Problem
@@ -22,25 +22,27 @@ Learners and prototypers want a **zero-install** environment that feels like [Sc
 
 ## Core user stories
 
-1. As a user, I can keep **many projects** in a personal library and **search** them by name, sprite, or comment text.
-2. As a user, I can organize my projects into named **studios** (Scratch-style collections); a project can belong to any number of studios.
-3. As a user, I can leave **comments** on my own projects (notes-to-self / changelog), tagged with a display-name author.
-4. As a user, I can **add and switch between sprites** and edit each sprite's **own scripts**.
-5. As a user, I can **drag blocks** from the palette into scripts and **nest** reporter/boolean blocks into input slots (for example, `move (x position) steps`).
-6. As a user, I can build **C-shaped** scripts: `if`, `if/else`, `repeat`, `repeat until`, `forever`.
-7. As a user, I can create **variables**, set/change them, drag the variable reporter into any number/string input, and toggle a stage monitor.
-8. As a user, I can **broadcast** a message and trigger `when I receive` hats across all sprites.
-9. As a user, I can press the **green flag** to trigger every `when 🏁 clicked` hat in parallel, and **stop** to halt every thread.
-10. As a user, I can **click a sprite on the stage** to trigger its `when this sprite clicked` hats.
-11. As a user, my whole library **auto-saves**; reloading the page restores everything.
+1. As a new user, I can **sign up** with a username + password on this browser; existing accounts can **sign in**.
+2. As a signed-in user, I can keep **many projects** in a personal library and **search** them by name, sprite, or comment text.
+3. As a user, I can organize my projects into named **studios**; a project can belong to any number of studios.
+4. As a user, I can leave **comments** on my own projects, authored under my account's display name.
+5. As a user, I can **add and switch between sprites** and edit each sprite's **own scripts**.
+6. As a user, I can **drag blocks** from the palette into scripts and **nest** reporter/boolean blocks into input slots.
+7. As a user, I can build **C-shaped** scripts: `if`, `if/else`, `repeat`, `repeat until`, `forever`.
+8. As a user, I can create **variables**, set/change them, drag the variable reporter into any number/string input, and toggle a stage monitor.
+9. As a user, I can **broadcast** a message and trigger `when I receive` hats across all sprites.
+10. As a user, I can press the **green flag** to trigger every `when 🏁 clicked` hat in parallel, and **stop** to halt every thread.
+11. As a user, I can **click a sprite on the stage** to trigger its `when this sprite clicked` hats.
+12. As a user, my whole library **auto-saves** per account; reloading the page keeps me signed in and restores everything.
+13. As a user, I can **sign out** and have another user **sign in** on the same browser; each account has its own library.
 
-## Non-goals (v0.3)
+## Non-goals (v0.4)
 
 - Sounds, pen, clones, lists, custom blocks (procedures).
 - A costume editor (each sprite has a single editable emoji/text costume).
 - `.sb3` import/export.
-- **Networked collaboration:** the library, studios, and comments live in the user's browser only. Comments use a free-form author display name — no auth, no identity guarantees.
-- Cloud saves and accounts.
+- **Real authentication.** The "log in / sign up" system is a **local profile system**: usernames and PBKDF2-hashed passwords stored in this browser's `localStorage`. Anyone with access to the browser can read or wipe everything via devtools. Do not reuse a real password here.
+- Networked collaboration / cloud saves / OAuth / email verification / password reset.
 
 ## Success metrics
 

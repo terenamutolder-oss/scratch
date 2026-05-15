@@ -18,10 +18,14 @@ Single source of truth for how to work on this repo. Product intent lives in `do
 | `docs/README.md` | Index of documentation |
 | `src/types/blocks.ts` | Block model (definitions + instances) |
 | `src/types/library.ts` | Library model: projects, studios, comments |
+| `src/types/auth.ts` | User + session model + storage keys |
 | `src/catalog/blockCatalog.ts` | Block definitions table |
 | `src/engine/runtime.ts` | Thread scheduler + RuntimeAPI |
 | `src/engine/interpreter.ts` | Block evaluator (statements + reporters) |
-| `src/state/ProjectContext.tsx` | Library state (all projects, current project, view) |
+| `src/state/AuthContext.tsx` | Local auth (PBKDF2 hashed passwords, session) |
+| `src/state/ProjectContext.tsx` | Per-user library state (projects, studios, comments, view) |
+| `src/components/AuthGate.tsx` | Sign-in / sign-up splash |
+| `src/components/UserMenu.tsx` | Header account menu |
 | `src/components/Library.tsx` | Explore view: grid + search + studios |
 | `src/components/CommentsPanel.tsx` | Per-project comments inside the editor |
 | `src/components/` | UI: palette, block view, scripts canvas, stage, sprite tray |
@@ -38,8 +42,12 @@ Single source of truth for how to work on this repo. Product intent lives in `do
 - **Block shapes** are explicit on the `BlockDef` (`hat | stack | c | e | cap | reporter | boolean`).
 - **Inputs** are pre-filled with their declared literal default when a block instance is created.
 - **Interpreter** is async; threads cooperate via `await`. Use the AbortSignal-aware helpers in `src/engine/runtime.ts`.
-- **State** flows through `ProjectContext`; the runtime mutates the *current* project via an updater plumbed through the library.
-- **Persistence:** the whole library (every project, studios, comments, view) auto-saves to `localStorage` under `scratch-web/library`. The legacy `scratch-web/project` key is migrated on first load.
+- **State** flows through `AuthContext` (current user) → `ProjectContext` (the user's library); the runtime mutates the *current* project via an updater plumbed through the library.
+- **Persistence:**
+  - **Users:** `scratch-web/users` (record map + username index).
+  - **Session:** `scratch-web/session` (active userId).
+  - **Library:** `scratch-web/library/<userId>` per user. Legacy single-library data at `scratch-web/library` and legacy single-project data at `scratch-web/project` are migrated to the first signed-up user on first load.
+- **Passwords:** PBKDF2-SHA-256, 150 000 iterations, per-user 16-byte salt, 256-bit derived key. Stored as hex. Local-only — see "out of scope" below.
 
 ## Before you ship a change
 
@@ -52,5 +60,5 @@ Single source of truth for how to work on this repo. Product intent lives in `do
 - Sounds, pen extension, clones, lists, custom blocks (procedures).
 - Costume editor / bitmap painting (one editable text/emoji per sprite).
 - `.sb3` import/export.
-- **Real** multi-user collaboration: comments are local-only (no server, no auth). Authors are a free-form display name stored in the library.
-- Cloud saves and accounts.
+- **Real authentication.** The "log in / sign up" system is a **local profile system**: usernames + PBKDF2-hashed passwords stored in `localStorage`. Anyone with access to the browser can read or wipe everything via devtools. Do not reuse a real password here.
+- Networked collaboration / cloud saves / OAuth / email verification.

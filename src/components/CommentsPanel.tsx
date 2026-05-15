@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useProject } from "../state/ProjectContext";
+import { useAuth } from "../state/AuthContext";
 
 function fmtTime(ts: number): string {
   const d = new Date(ts);
@@ -12,24 +13,17 @@ function fmtTime(ts: number): string {
 }
 
 export default function CommentsPanel() {
-  const { project, library, setAuthorName, addComment, deleteComment } =
-    useProject();
+  const { project, addComment, deleteComment } = useProject();
+  const { currentUser } = useAuth();
   const [text, setText] = useState("");
 
   return (
     <section className="comments-panel">
       <h2 className="panel-title">Comments</h2>
-      <div className="comments-author">
-        <label className="hint" htmlFor="comments-author-input">
-          You are commenting as
-        </label>
-        <input
-          id="comments-author-input"
-          className="mini-editor-input"
-          value={library.authorName}
-          onChange={(e) => setAuthorName(e.target.value)}
-        />
-      </div>
+      <p className="hint">
+        Posting as <strong>{currentUser?.displayName ?? "you"}</strong>
+        {currentUser ? <> (@{currentUser.username})</> : null}
+      </p>
 
       <form
         className="comment-form"

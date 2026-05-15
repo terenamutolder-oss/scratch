@@ -34,9 +34,12 @@ import type {
 import { makeSprite } from "../engine/sprite";
 import { Runtime } from "../engine/runtime";
 import { runStack } from "../engine/interpreter";
+import {
+  LEGACY_LIBRARY_KEY,
+  libraryStorageKey,
+} from "../types/auth";
 
-const STORAGE_KEY = "scratch-web/library";
-const LEGACY_KEY = "scratch-web/project";
+const LEGACY_FLAT_PROJECT_KEY = "scratch-web/project";
 
 /* --------------------------- path types --------------------------- */
 
@@ -95,29 +98,60 @@ function defaultLibrary(): Library {
   };
 }
 
-function loadLibrary(): Library {
+function tryParseLibrary(raw: string): Library | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Library;
-      if (parsed.projects && parsed.projectOrder && parsed.currentProjectId) {
-        // Backfill optional fields for forward-compat.
-        const out: Library = {
-          projects: parsed.projects,
-          projectOrder: parsed.projectOrder,
-          studios: parsed.studios ?? {},
-          studioOrder: parsed.studioOrder ?? [],
-          currentProjectId: parsed.currentProjectId,
-          view: parsed.view ?? "editor",
-          authorName: parsed.authorName ?? "you",
-        };
-        return out;
+    const parsed = JSON.parse(raw) as Library;
+    if (!parsed.projects || !parsed.projectOrder || !parsed.currentProjectId) {
+      return null;
+    }
+    return {
+      projects: parsed.projects,
+      projectOrder: parsed.projectOrder,
+      studios: parsed.studios ?? {},
+      studioOrder: parsed.studioOrder ?? [],
+      currentProjectId: parsed.currentProjectId,
+      view: parsed.view ?? "editor",
+      authorName: parsed.authorName ?? "you",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load this user's library, migrating from legacy keys on first run.
+ *
+ * Order:
+ *   1. Per-user library at `scratch-web/library/<userId>` — use directly.
+ *   2. Legacy multi-project library at `scratch-web/library` — claim for this
+ *      user and delete the legacy key.
+ *   3. Legacy single-project payload at `scratch-web/project` — wrap into a
+ *      one-project library and delete the legacy key.
+ *   4. Default empty library.
+ */
+function loadLibrary(userId: string): Library {
+  const key = libraryStorageKey(userId);
+  const raw = localStorage.getItem(key);
+  if (raw) {
+    const parsed = tryParseLibrary(raw);
+    if (parsed) return parsed;
+  }
+  try {
+    const legacyLib = localStorage.getItem(LEGACY_LIBRARY_KEY);
+    if (legacyLib) {
+      const parsed = tryParseLibrary(legacyLib);
+      if (parsed) {
+        try {
+          localStorage.removeItem(LEGACY_LIBRARY_KEY);
+        } catch {
+          /* ignore */
+        }
+        return parsed;
       }
     }
-    // Migrate legacy single-project storage.
-    const legacy = localStorage.getItem(LEGACY_KEY);
-    if (legacy) {
-      const legacyProject = JSON.parse(legacy) as Project;
+    const legacyFlat = localStorage.getItem(LEGACY_FLAT_PROJECT_KEY);
+    if (legacyFlat) {
+      const legacyProject = JSON.parse(legacyFlat) as Project;
       const wrapped: StoredProject = {
         ...newStoredProject("Imported project"),
         sprites: legacyProject.sprites,
@@ -125,6 +159,11 @@ function loadLibrary(): Library {
         variables: legacyProject.variables,
         broadcasts: legacyProject.broadcasts,
       };
+      try {
+        localStorage.removeItem(LEGACY_FLAT_PROJECT_KEY);
+      } catch {
+        /* ignore */
+      }
       return {
         projects: { [wrapped.id]: wrapped },
         projectOrder: [wrapped.id],
@@ -136,7 +175,7 @@ function loadLibrary(): Library {
       };
     }
   } catch {
-    /* fall through */
+    /* ignore */
   }
   return defaultLibrary();
 }
@@ -318,7 +357,6 @@ export type ProjectContextValue = {
 
   // view + library
   setView: (view: LibraryView) => void;
-  setAuthorName: (name: string) => void;
   createProject: (name?: string) => string;
   openProject: (id: string) => void;
   renameProject: (id: string, name: string) => void;
@@ -370,8 +408,16 @@ export type ProjectContextValue = {
 
 const Ctx = createContext<ProjectContextValue | null>(null);
 
-export function ProjectProvider({ children }: { children: ReactNode }) {
-  const [library, setLibrary] = useState<Library>(loadLibrary);
+export function ProjectProvider({
+  userId,
+  authorName,
+  children,
+}: {
+  userId: string;
+  authorName: string;
+  children: ReactNode;
+}) {
+  const [library, setLibrary] = useState<Library>(() => loadLibrary(userId));
   const libraryRef = useRef(library);
   libraryRef.current = library;
 
@@ -432,11 +478,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(library));
+      localStorage.setItem(libraryStorageKey(userId), JSON.stringify(library));
     } catch {
       /* quota — ignore */
     }
-  }, [library]);
+  }, [library, userId]);
 
   /* ------------- view + library ops ------------- */
 
@@ -448,11 +494,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     [runtime],
   );
-
-  const setAuthorName = useCallback((name: string) => {
-    const clean = name.trim().slice(0, 40) || "you";
-    setLibrary((lib) => ({ ...lib, authorName: clean }));
-  }, []);
 
   const createProject = useCallback((name?: string): string => {
     const p = newStoredProject(name?.trim() || "Untitled project");
@@ -619,6 +660,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   /* ------------- comments ------------- */
 
+  const authorRef = useRef(authorName);
+  authorRef.current = authorName;
+
   const addComment = useCallback(
     (projectId: string, text: string) => {
       const clean = text.trim();
@@ -626,7 +670,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       const c: Comment = {
         id: randomId(),
         text: clean,
-        author: libraryRef.current.authorName || "you",
+        author: authorRef.current || "you",
         createdAt: Date.now(),
       };
       setLibrary((lib) =>
@@ -1101,7 +1145,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       view: library.view,
 
       setView,
-      setAuthorName,
       createProject,
       openProject,
       renameProject,
@@ -1151,7 +1194,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       runtime,
       threadTick,
       setView,
-      setAuthorName,
       createProject,
       openProject,
       renameProject,
