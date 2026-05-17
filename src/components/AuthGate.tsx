@@ -4,7 +4,7 @@ import { useAuth } from "../state/AuthContext";
 type Mode = "signin" | "signup";
 
 export default function AuthGate() {
-  const { userCount, signIn, signUp, continueAsGuest } = useAuth();
+  const { userCount, usesCloud, signIn, signUp, continueAsGuest } = useAuth();
   const initialMode: Mode = userCount === 0 ? "signup" : "signin";
   const [mode, setMode] = useState<Mode>(initialMode);
   const [username, setUsername] = useState("");
@@ -38,7 +38,7 @@ export default function AuthGate() {
     }
   }
 
-  const showSwitch = userCount > 0 || mode === "signin";
+  const showSwitch = usesCloud || userCount > 0 || mode === "signin";
 
   return (
     <div className="auth-shell">
@@ -138,10 +138,20 @@ export default function AuthGate() {
         ) : null}
 
         <p className="auth-disclaimer">
-          <strong>Local accounts only.</strong> Usernames and PBKDF2-hashed
-          passwords are stored in this browser. Clearing site data deletes
-          accounts and projects. This is not a real authentication system —
-          don't reuse a sensitive password here.
+          {usesCloud ? (
+            <>
+              <strong>Cloud accounts.</strong> Sign-in uses Firebase on Google
+              Cloud; projects and studios are stored in Firestore. Use a unique
+              password — not one you use elsewhere.
+            </>
+          ) : (
+            <>
+              <strong>Local accounts only.</strong> Usernames and PBKDF2-hashed
+              passwords are stored in this browser. Clearing site data deletes
+              accounts and projects. This is not a real authentication system —
+              don't reuse a sensitive password here.
+            </>
+          )}
         </p>
 
         <div className="auth-guest-row">

@@ -29,6 +29,8 @@ export type StoredProject = {
   updatedAt: number;
   studioIds: string[];
   comments: Comment[];
+  /** userIds who liked this project (local browser). */
+  likedByUserIds?: string[];
   sprites: Sprite[];
   selectedSpriteId: string;
   variables: Variable[];
@@ -53,7 +55,15 @@ export type SharedLibrary = {
 export type UserState = {
   currentProjectId: string;
   view: LibraryView;
+  /** creator userId → subscription start timestamp (ms). */
+  subscriptions?: Record<string, number>;
+  /** User confirmed they are 16+ before using comment / like / subscribe. */
+  socialAgeOk?: boolean;
 };
+
+/** 16 calendar years in ms (for longtime-subscriber badge). */
+export const SIXTEEN_YEARS_MS =
+  16 * 365.2425 * 24 * 60 * 60 * 1000;
 
 /** Legacy single-user library shape (used during migration). */
 export type LegacyLibrary = {

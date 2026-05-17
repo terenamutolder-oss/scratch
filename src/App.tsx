@@ -7,11 +7,12 @@ import SpriteTray from "./components/SpriteTray";
 import StageView from "./components/StageView";
 import Toolbar from "./components/Toolbar";
 import UserMenu from "./components/UserMenu";
+import { isGuestUserId } from "./types/auth";
 import { useAuth } from "./state/AuthContext";
 import { ProjectProvider, useProject } from "./state/ProjectContext";
 
 export default function App() {
-  const { ready, currentUser } = useAuth();
+  const { ready, currentUser, usesCloud } = useAuth();
 
   if (!ready) return null;
 
@@ -19,21 +20,33 @@ export default function App() {
     return <AuthGate />;
   }
 
+  const useCloud =
+    usesCloud && !currentUser.isGuest && !isGuestUserId(currentUser.id);
+
   return (
     <ProjectProvider
       key={currentUser.id}
       userId={currentUser.id}
       username={currentUser.username}
       displayName={currentUser.displayName}
+      useCloud={useCloud}
     >
-      <EditorShell />
+      <EditorShell usesCloud={useCloud} />
     </ProjectProvider>
   );
 }
 
-function EditorShell() {
-  const { view, isOwner, project } = useProject();
+function EditorShell({ usesCloud }: { usesCloud: boolean }) {
+  const { libraryReady, view, isOwner, project } = useProject();
   const readOnlyEditor = view === "editor" && !isOwner;
+
+  if (!libraryReady) {
+    return (
+      <div className="auth-shell">
+        <p className="brand-tag">Loading your projects from the cloud…</p>
+      </div>
+    );
+  }
 
   return (
     <div className={`app-root ${readOnlyEditor ? "app-root--readonly" : ""}`}>
@@ -68,7 +81,10 @@ function EditorShell() {
             <h2 className="panel-title">
               Scripts
               {readOnlyEditor ? (
-                <span className="panel-readonly-tag" title={`Created by ${project.ownerDisplayName ?? "another user"}`}>
+                <span
+                  className="panel-readonly-tag"
+                  title={`Created by ${project.ownerDisplayName ?? "another user"}`}
+                >
                   read-only
                 </span>
               ) : null}
@@ -87,7 +103,10 @@ function EditorShell() {
       <footer className="app-footer">
         <span>
           Agent instructions: <code>AGENTS.md</code> · Product docs:{" "}
-          <code>docs/</code> · Library shared across this browser.
+          <code>docs/</code>
+          {usesCloud
+            ? " · Projects saved to Google Cloud Firestore."
+            : " · Library shared across this browser."}
         </span>
       </footer>
     </div>

@@ -39,6 +39,7 @@ export default function Library() {
     deleteStudio,
     toggleStudioMembership,
     setView,
+    likeCount,
   } = useProject();
 
   const currentProjectId = useProject().project.id;
@@ -333,6 +334,8 @@ export default function Library() {
                       </span>
                       <span className="muted"> · Updated {fmtDate(p.updatedAt)}</span>
                       <span className="muted">
+                        {" · "}
+                        {likeCount(p.id)} like{likeCount(p.id) === 1 ? "" : "s"}
                         {" · "}
                         {p.comments.length} comment
                         {p.comments.length === 1 ? "" : "s"}

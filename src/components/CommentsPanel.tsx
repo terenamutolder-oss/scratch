@@ -13,12 +13,19 @@ function fmtTime(ts: number): string {
 }
 
 export default function CommentsPanel() {
-  const { project, addComment, deleteComment, canDeleteComment } = useProject();
+  const {
+    project,
+    addComment,
+    deleteComment,
+    canDeleteComment,
+    socialAgeOk,
+    confirmSocialAge,
+  } = useProject();
   const { currentUser } = useAuth();
   const [text, setText] = useState("");
 
   return (
-    <section className="comments-panel">
+    <section id="comments-section" className="comments-panel">
       <h2 className="panel-title">Comments</h2>
       <p className="hint">
         Posting as <strong>{currentUser?.displayName ?? "you"}</strong>
@@ -30,6 +37,13 @@ export default function CommentsPanel() {
         onSubmit={(e) => {
           e.preventDefault();
           if (!text.trim()) return;
+          if (!socialAgeOk) {
+            const ok = window.confirm(
+              "Comments are for viewers 16 and older. Confirm you are 16+ to post?",
+            );
+            if (!ok) return;
+            confirmSocialAge();
+          }
           addComment(project.id, text);
           setText("");
         }}

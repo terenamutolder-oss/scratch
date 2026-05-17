@@ -24,26 +24,34 @@ import type {
   Stack,
   Variable,
 } from "../types/blocks";
-import type {
-  Comment,
-  LegacyLibrary,
-  LibraryView,
-  SharedLibrary,
-  StoredProject,
-  Studio,
-  UserState,
+import {
+  SIXTEEN_YEARS_MS,
+  type Comment,
+  type LibraryView,
+  type SharedLibrary,
+  type StoredProject,
+  type Studio,
+  type UserState,
 } from "../types/library";
 import { makeSprite } from "../engine/sprite";
 import { Runtime } from "../engine/runtime";
 import { runStack } from "../engine/interpreter";
+import { isGuestUserId } from "../types/auth";
 import {
-  LEGACY_LIBRARY_KEY,
-  SHARED_LIBRARY_KEY,
-  legacyUserLibraryKey,
-  userStateKey,
-} from "../types/auth";
-
-const LEGACY_FLAT_PROJECT_KEY = "scratch-web/project";
+  migrateLocalLibrary,
+  saveSharedLibraryLocal,
+  saveUserStateLocal,
+  loadUserStateLocal,
+} from "../storage/localPersistence";
+import {
+  deleteProjectCloud,
+  deleteStudioCloud,
+  fetchUserState,
+  importLocalLibraryIfNeeded,
+  saveUserStateCloud,
+  scheduleLibrarySync,
+} from "../storage/cloudPersistence";
+import { ensureSeedProject } from "../storage/cloudSeed";
 
 /* --------------------------- path types --------------------------- */
 
@@ -87,6 +95,7 @@ function newStoredProject(
     updatedAt: Date.now(),
     studioIds: [],
     comments: [],
+    likedByUserIds: [],
     sprites: [cat],
     selectedSpriteId: cat.id,
     variables: [],
@@ -95,195 +104,6 @@ function newStoredProject(
     ownerUsername,
     ownerDisplayName,
   };
-}
-
-/* --------------------------- migration --------------------------- */
-
-function loadSharedLibrary(): SharedLibrary {
-  try {
-    const raw = localStorage.getItem(SHARED_LIBRARY_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as SharedLibrary;
-      if (parsed.projects && parsed.projectOrder) {
-        return {
-          projects: parsed.projects,
-          projectOrder: parsed.projectOrder,
-          studios: parsed.studios ?? {},
-          studioOrder: parsed.studioOrder ?? [],
-        };
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return { projects: {}, projectOrder: [], studios: {}, studioOrder: [] };
-}
-
-function mergeLegacyLibrary(
-  shared: SharedLibrary,
-  lib: LegacyLibrary,
-  userId: string,
-  username: string,
-  displayName: string,
-): SharedLibrary {
-  const tagProject = (p: StoredProject): StoredProject => ({
-    ...p,
-    ownerId: p.ownerId ?? userId,
-    ownerUsername: p.ownerUsername ?? username,
-    ownerDisplayName: p.ownerDisplayName ?? displayName,
-    comments: (p.comments ?? []).map((c) => ({
-      ...c,
-      authorId: c.authorId ?? userId,
-      authorUsername: c.authorUsername ?? username,
-    })),
-  });
-  const tagStudio = (s: Studio): Studio => ({
-    ...s,
-    ownerId: s.ownerId ?? userId,
-    ownerUsername: s.ownerUsername ?? username,
-  });
-  const projects = { ...shared.projects };
-  const projectOrder = [...shared.projectOrder];
-  for (const id of lib.projectOrder) {
-    const p = lib.projects[id];
-    if (p && !projects[id]) {
-      projects[id] = tagProject(p);
-      projectOrder.push(id);
-    }
-  }
-  const studios = { ...shared.studios };
-  const studioOrder = [...shared.studioOrder];
-  for (const sid of lib.studioOrder) {
-    const s = lib.studios[sid];
-    if (s && !studios[sid]) {
-      studios[sid] = tagStudio(s);
-      studioOrder.push(sid);
-    }
-  }
-  return { projects, projectOrder, studios, studioOrder };
-}
-
-function migrate(
-  userId: string,
-  username: string,
-  displayName: string,
-): { shared: SharedLibrary; preferredUserState: UserState | null } {
-  let shared = loadSharedLibrary();
-  let preferredUserState: UserState | null = null;
-
-  // v0.4 legacy: per-user library
-  try {
-    const k = legacyUserLibraryKey(userId);
-    const raw = localStorage.getItem(k);
-    if (raw) {
-      const lib = JSON.parse(raw) as LegacyLibrary;
-      if (lib.projects && lib.projectOrder) {
-        shared = mergeLegacyLibrary(shared, lib, userId, username, displayName);
-        preferredUserState = {
-          currentProjectId: lib.currentProjectId,
-          view: lib.view ?? "editor",
-        };
-      }
-      localStorage.removeItem(k);
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // v0.3 legacy: shared single library (pre-account)
-  try {
-    const raw = localStorage.getItem(LEGACY_LIBRARY_KEY);
-    if (raw) {
-      const lib = JSON.parse(raw) as LegacyLibrary;
-      if (lib.projects && lib.projectOrder) {
-        shared = mergeLegacyLibrary(shared, lib, userId, username, displayName);
-        if (!preferredUserState) {
-          preferredUserState = {
-            currentProjectId: lib.currentProjectId,
-            view: lib.view ?? "editor",
-          };
-        }
-      }
-      localStorage.removeItem(LEGACY_LIBRARY_KEY);
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // v0.1/0.2 legacy: a single Project payload (no Library wrapper)
-  try {
-    const raw = localStorage.getItem(LEGACY_FLAT_PROJECT_KEY);
-    if (raw) {
-      const legacy = JSON.parse(raw) as Project;
-      const wrapped: StoredProject = {
-        ...newStoredProject(
-          "Imported project",
-          userId,
-          username,
-          displayName,
-        ),
-        sprites: legacy.sprites,
-        selectedSpriteId: legacy.selectedSpriteId,
-        variables: legacy.variables,
-        broadcasts: legacy.broadcasts,
-      };
-      shared = {
-        ...shared,
-        projects: { ...shared.projects, [wrapped.id]: wrapped },
-        projectOrder: [wrapped.id, ...shared.projectOrder],
-      };
-      if (!preferredUserState) {
-        preferredUserState = { currentProjectId: wrapped.id, view: "editor" };
-      }
-      localStorage.removeItem(LEGACY_FLAT_PROJECT_KEY);
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // First-ever load: seed a starter project so the editor has something to show.
-  if (shared.projectOrder.length === 0) {
-    const seed = newStoredProject(
-      "My first project",
-      userId,
-      username,
-      displayName,
-    );
-    shared = {
-      ...shared,
-      projects: { ...shared.projects, [seed.id]: seed },
-      projectOrder: [seed.id, ...shared.projectOrder],
-    };
-    if (!preferredUserState) {
-      preferredUserState = { currentProjectId: seed.id, view: "editor" };
-    }
-  }
-
-  return { shared, preferredUserState };
-}
-
-function loadUserState(
-  userId: string,
-  fallback: UserState,
-  shared: SharedLibrary,
-): UserState {
-  try {
-    const raw = localStorage.getItem(userStateKey(userId));
-    if (raw) {
-      const parsed = JSON.parse(raw) as UserState;
-      const currentProjectId =
-        parsed.currentProjectId && shared.projects[parsed.currentProjectId]
-          ? parsed.currentProjectId
-          : fallback.currentProjectId;
-      return {
-        currentProjectId,
-        view: parsed.view === "explore" ? "explore" : "editor",
-      };
-    }
-  } catch {
-    /* ignore */
-  }
-  return fallback;
 }
 
 /* --------------------------- pure helpers --------------------------- */
@@ -482,6 +302,7 @@ function mergeView(p: StoredProject, v: Project): StoredProject {
 /* --------------------------- context --------------------------- */
 
 export type ProjectContextValue = {
+  libraryReady: boolean;
   library: SharedLibrary;
   project: StoredProject;
   selectedSprite: Sprite;
@@ -513,6 +334,16 @@ export type ProjectContextValue = {
   addComment: (projectId: string, text: string) => void;
   deleteComment: (projectId: string, commentId: string) => void;
   canDeleteComment: (projectId: string, commentId: string) => boolean;
+
+  // social (comment / like / subscribe — 16+ gate)
+  socialAgeOk: boolean;
+  confirmSocialAge: () => void;
+  hasLiked: (projectId: string) => boolean;
+  likeCount: (projectId: string) => number;
+  toggleLike: (projectId: string) => void;
+  isSubscribed: (creatorId: string) => boolean;
+  isLongtimeSubscriber: (creatorId: string) => boolean;
+  toggleSubscribe: (creatorId: string) => void;
 
   // sprites
   addSprite: () => void;
@@ -552,17 +383,18 @@ export function ProjectProvider({
   userId,
   username,
   displayName,
+  useCloud,
   children,
 }: {
   userId: string;
   username: string;
   displayName: string;
+  useCloud: boolean;
   children: ReactNode;
 }) {
-  /* --- one-time migration + initial state --- */
-  const initial = useMemo(
+  const initialLocal = useMemo(
     () => {
-      const { shared, preferredUserState } = migrate(
+      const { shared, preferredUserState } = migrateLocalLibrary(
         userId,
         username,
         displayName,
@@ -573,24 +405,118 @@ export function ProjectProvider({
           shared.projectOrder[0] ??
           "",
         view: "editor",
+        subscriptions: {},
+        socialAgeOk: false,
       };
-      const us = loadUserState(userId, fallback, shared);
+      const us = loadUserStateLocal(userId, fallback, shared);
       return { shared, userState: us };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [userId],
   );
 
-  const [library, setLibrary] = useState<SharedLibrary>(initial.shared);
-  const [userState, setUserState] = useState<UserState>(initial.userState);
+  const emptyLibrary: SharedLibrary = {
+    projects: {},
+    projectOrder: [],
+    studios: {},
+    studioOrder: [],
+  };
+
+  const [libraryReady, setLibraryReady] = useState(!useCloud);
+  const [library, setLibrary] = useState<SharedLibrary>(
+    useCloud ? emptyLibrary : initialLocal.shared,
+  );
+  const [userState, setUserState] = useState<UserState>(
+    useCloud
+      ? {
+          currentProjectId: "",
+          view: "editor",
+          subscriptions: {},
+          socialAgeOk: false,
+        }
+      : initialLocal.userState,
+  );
+
+  useEffect(() => {
+    if (!useCloud || isGuestUserId(userId)) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        let shared = await importLocalLibraryIfNeeded(
+          userId,
+          username,
+          displayName,
+        );
+        if (shared.projectOrder.length === 0) {
+          shared = await ensureSeedProject(userId, username, displayName);
+        }
+        const fallback: UserState = {
+          currentProjectId: shared.projectOrder[0] ?? "",
+          view: "editor",
+          subscriptions: {},
+          socialAgeOk: false,
+        };
+        const cloudState = await fetchUserState(userId);
+        const us: UserState = cloudState
+          ? {
+              currentProjectId:
+                cloudState.currentProjectId &&
+                shared.projects[cloudState.currentProjectId]
+                  ? cloudState.currentProjectId
+                  : fallback.currentProjectId,
+              view: cloudState.view === "explore" ? "explore" : "editor",
+              subscriptions: cloudState.subscriptions ?? {},
+              socialAgeOk: cloudState.socialAgeOk ?? false,
+            }
+          : fallback;
+        if (!cancelled) {
+          setLibrary(shared);
+          setUserState(us);
+          setLibraryReady(true);
+        }
+      } catch (e) {
+        console.error(e);
+        if (!cancelled) {
+          const { shared, preferredUserState } = migrateLocalLibrary(
+            userId,
+            username,
+            displayName,
+          );
+          const fallback: UserState = {
+            currentProjectId:
+              preferredUserState?.currentProjectId ??
+              shared.projectOrder[0] ??
+              "",
+            view: "editor",
+            subscriptions: {},
+            socialAgeOk: false,
+          };
+          setLibrary(shared);
+          setUserState(loadUserStateLocal(userId, fallback, shared));
+          setLibraryReady(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [useCloud, userId, username, displayName]);
   /** Local clone used when the active user is NOT the project owner. */
   const [previewProject, setPreviewProject] = useState<StoredProject | null>(
-    () => {
-      const p = initial.shared.projects[initial.userState.currentProjectId];
-      if (p && p.ownerId && p.ownerId !== userId) return cloneProject(p);
-      return null;
-    },
+    null,
   );
+
+  useEffect(() => {
+    if (!libraryReady) return;
+    const p = library.projects[userState.currentProjectId];
+    if (p && p.ownerId && p.ownerId !== userId) {
+      setPreviewProject(cloneProject(p));
+    } else {
+      setPreviewProject(null);
+    }
+  }, [libraryReady, library, userState.currentProjectId, userId]);
 
   /* --- derived current project --- */
 
@@ -652,20 +578,22 @@ export function ProjectProvider({
   /* --- persistence --- */
 
   useEffect(() => {
-    try {
-      localStorage.setItem(SHARED_LIBRARY_KEY, JSON.stringify(library));
-    } catch {
-      /* ignore */
+    if (!libraryReady) return;
+    if (useCloud && !isGuestUserId(userId)) {
+      scheduleLibrarySync(library);
+      return;
     }
-  }, [library]);
+    saveSharedLibraryLocal(library);
+  }, [library, libraryReady, useCloud, userId]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(userStateKey(userId), JSON.stringify(userState));
-    } catch {
-      /* ignore */
+    if (!libraryReady) return;
+    if (useCloud && !isGuestUserId(userId)) {
+      void saveUserStateCloud(userId, userState);
+      return;
     }
-  }, [userState, userId]);
+    saveUserStateLocal(userId, userState);
+  }, [userState, userId, libraryReady, useCloud]);
 
   /* ---------- view + project lifecycle ---------- */
 
@@ -741,6 +669,9 @@ export function ProjectProvider({
 
   const deleteProject = useCallback(
     (id: string) => {
+      if (useCloud && !isGuestUserId(userId)) {
+        void deleteProjectCloud(id);
+      }
       setLibrary((lib) => {
         const p = lib.projects[id];
         if (!p || p.ownerId !== userId) return lib;
@@ -758,7 +689,7 @@ export function ProjectProvider({
         return u; // updated below via effect
       });
     },
-    [userId],
+    [userId, useCloud],
   );
 
   // If currentProjectId no longer points at a real project, move to the first one.
@@ -782,6 +713,7 @@ export function ProjectProvider({
         createdAt: Date.now(),
         updatedAt: Date.now(),
         comments: [],
+        likedByUserIds: [],
         ownerId: userId,
         ownerUsername: username,
         ownerDisplayName: displayName,
@@ -847,6 +779,9 @@ export function ProjectProvider({
 
   const deleteStudio = useCallback(
     (id: string) => {
+      if (useCloud && !isGuestUserId(userId)) {
+        void deleteStudioCloud(id);
+      }
       setLibrary((lib) => {
         const s = lib.studios[id];
         if (!s) return lib;
@@ -866,7 +801,7 @@ export function ProjectProvider({
         };
       });
     },
-    [userId],
+    [userId, useCloud],
   );
 
   const toggleStudioMembership = useCallback(
@@ -954,6 +889,90 @@ export function ProjectProvider({
     },
     [userId],
   );
+
+  /* ---------- social: like & subscribe ---------- */
+
+  const socialAgeOk = userState.socialAgeOk ?? false;
+
+  const confirmSocialAge = useCallback(() => {
+    setUserState((u) => ({ ...u, socialAgeOk: true }));
+  }, []);
+
+  const hasLiked = useCallback(
+    (projectId: string): boolean => {
+      const p = library.projects[projectId];
+      if (!p) return false;
+      return (p.likedByUserIds ?? []).includes(userId);
+    },
+    [library, userId],
+  );
+
+  const likeCount = useCallback(
+    (projectId: string): number => {
+      const p = library.projects[projectId];
+      return p ? (p.likedByUserIds ?? []).length : 0;
+    },
+    [library],
+  );
+
+  const toggleLike = useCallback(
+    (projectId: string) => {
+      setLibrary((lib) =>
+        withProject(lib, projectId, (p) => {
+          const likes = p.likedByUserIds ?? [];
+          const on = likes.includes(userId);
+          return {
+            ...p,
+            likedByUserIds: on
+              ? likes.filter((id) => id !== userId)
+              : [...likes, userId],
+          };
+        }),
+      );
+      setPreviewProject((prev) => {
+        if (!prev || prev.id !== projectId) return prev;
+        const likes = prev.likedByUserIds ?? [];
+        const on = likes.includes(userId);
+        return {
+          ...prev,
+          likedByUserIds: on
+            ? likes.filter((id) => id !== userId)
+            : [...likes, userId],
+        };
+      });
+    },
+    [userId],
+  );
+
+  const isSubscribed = useCallback(
+    (creatorId: string): boolean => {
+      if (!creatorId) return false;
+      return Boolean(userState.subscriptions?.[creatorId]);
+    },
+    [userState.subscriptions],
+  );
+
+  const isLongtimeSubscriber = useCallback(
+    (creatorId: string): boolean => {
+      const at = userState.subscriptions?.[creatorId];
+      if (!at) return false;
+      return Date.now() - at >= SIXTEEN_YEARS_MS;
+    },
+    [userState.subscriptions],
+  );
+
+  const toggleSubscribe = useCallback((creatorId: string) => {
+    if (!creatorId) return;
+    setUserState((u) => {
+      const subs = { ...(u.subscriptions ?? {}) };
+      if (subs[creatorId]) {
+        delete subs[creatorId];
+      } else {
+        subs[creatorId] = Date.now();
+      }
+      return { ...u, subscriptions: subs };
+    });
+  }, []);
 
   /* ---------- owner-gated mutation helper ---------- */
 
@@ -1418,6 +1437,7 @@ export function ProjectProvider({
 
   const value = useMemo<ProjectContextValue>(
     () => ({
+      libraryReady,
       library,
       project: currentProject,
       selectedSprite,
@@ -1442,6 +1462,14 @@ export function ProjectProvider({
       addComment,
       deleteComment,
       canDeleteComment,
+      socialAgeOk,
+      confirmSocialAge,
+      hasLiked,
+      likeCount,
+      toggleLike,
+      isSubscribed,
+      isLongtimeSubscriber,
+      toggleSubscribe,
       addSprite,
       selectSprite,
       renameSprite,
@@ -1467,6 +1495,7 @@ export function ProjectProvider({
       setMouseDown,
     }),
     [
+      libraryReady,
       library,
       currentProject,
       selectedSprite,
@@ -1489,6 +1518,14 @@ export function ProjectProvider({
       addComment,
       deleteComment,
       canDeleteComment,
+      socialAgeOk,
+      confirmSocialAge,
+      hasLiked,
+      likeCount,
+      toggleLike,
+      isSubscribed,
+      isLongtimeSubscriber,
+      toggleSubscribe,
       addSprite,
       selectSprite,
       renameSprite,

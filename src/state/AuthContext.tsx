@@ -8,17 +8,40 @@ import {
   type ReactNode,
 } from "react";
 import {
-  AUTH_STORAGE_KEY,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  type User as FirebaseUser,
+} from "firebase/auth";
+import {
   GUEST_USER_ID,
-  SESSION_STORAGE_KEY,
   isGuestUserId,
   type Session,
   type User,
   type UsersStore,
 } from "../types/auth";
 import { randomId } from "../catalog/blockCatalog";
+import {
+  getFirebaseAuth,
+  isFirebaseConfigured,
+  usernameToAuthEmail,
+} from "../lib/firebase";
+import {
+  loadLocalSession,
+  loadUsersStore,
+  saveLocalSession,
+  saveUsersStore,
+} from "../storage/localPersistence";
+import {
+  claimUsername,
+  createUserProfile,
+  fetchUserProfile,
+  isUsernameAvailable,
+  updateUserProfile,
+} from "../storage/cloudPersistence";
 
-/* --------------------------- password hashing --------------------------- */
+/* --------------------------- password hashing (local-only) --------------------------- */
 
 const ITERATIONS = 150_000;
 const HASH_BITS = 256;
@@ -40,7 +63,6 @@ function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** Timing-conservative hex string comparison (best-effort in JS). */
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -91,30 +113,6 @@ async function verifyPassword(
   return constantTimeEqual(candidate, user.passwordHash);
 }
 
-/* --------------------------- store helpers --------------------------- */
-
-function loadUsers(): UsersStore {
-  try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
-    if (!raw) return { users: {}, byUsername: {} };
-    const parsed = JSON.parse(raw) as UsersStore;
-    return {
-      users: parsed.users ?? {},
-      byUsername: parsed.byUsername ?? {},
-    };
-  } catch {
-    return { users: {}, byUsername: {} };
-  }
-}
-
-function saveUsers(store: UsersStore) {
-  try {
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(store));
-  } catch {
-    /* ignore */
-  }
-}
-
 function syntheticGuestUser(): User {
   return {
     id: GUEST_USER_ID,
@@ -127,30 +125,6 @@ function syntheticGuestUser(): User {
     lastLoginAt: 0,
     isGuest: true,
   };
-}
-
-function loadSession(): Session | null {
-  try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Session;
-    if (!parsed.userId) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function saveSession(session: Session | null) {
-  try {
-    if (session) {
-      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-    } else {
-      localStorage.removeItem(SESSION_STORAGE_KEY);
-    }
-  } catch {
-    /* ignore */
-  }
 }
 
 function canonicalUsername(raw: string): string {
@@ -172,6 +146,39 @@ function validatePassword(p: string): string | null {
   return null;
 }
 
+function profileToUser(uid: string, profile: {
+  username: string;
+  displayName: string;
+  createdAt: number;
+  lastLoginAt: number;
+}): User {
+  return {
+    id: uid,
+    username: profile.username,
+    displayName: profile.displayName,
+    passwordSalt: "",
+    passwordHash: "",
+    iterations: 0,
+    createdAt: profile.createdAt,
+    lastLoginAt: profile.lastLoginAt,
+  };
+}
+
+function firebaseAuthErrorMessage(code: string): string {
+  switch (code) {
+    case "auth/email-already-in-use":
+      return "Username is taken.";
+    case "auth/invalid-credential":
+    case "auth/wrong-password":
+    case "auth/user-not-found":
+      return "Wrong username or password.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Wait a moment and try again.";
+    default:
+      return "Authentication failed. Try again.";
+  }
+}
+
 /* --------------------------- context --------------------------- */
 
 export type AuthResult = { ok: true } | { ok: false; error: string };
@@ -180,7 +187,8 @@ export type AuthContextValue = {
   ready: boolean;
   currentUser: User | null;
   userCount: number;
-  /** Open the editor immediately without username/password; data is still local-only. */
+  /** True when Firebase + Firestore are configured (cloud persistence). */
+  usesCloud: boolean;
   continueAsGuest: () => void;
   signUp: (input: {
     username: string;
@@ -195,44 +203,125 @@ export type AuthContextValue = {
 const Ctx = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [users, setUsers] = useState<UsersStore>(() => loadUsers());
-  const [session, setSession] = useState<Session | null>(() => loadSession());
-  const [ready, setReady] = useState(false);
+  const usesCloud = isFirebaseConfigured();
+
+  const [users, setUsers] = useState<UsersStore>(() =>
+    usesCloud ? { users: {}, byUsername: {} } : loadUsersStore(),
+  );
+  const [session, setSession] = useState<Session | null>(() =>
+    usesCloud ? null : loadLocalSession(),
+  );
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [ready, setReady] = useState(!usesCloud);
 
   useEffect(() => {
-    setReady(true);
-  }, []);
+    if (!usesCloud) {
+      saveUsersStore(users);
+    }
+  }, [users, usesCloud]);
 
   useEffect(() => {
-    saveUsers(users);
-  }, [users]);
+    if (!usesCloud) {
+      saveLocalSession(session);
+    }
+  }, [session, usesCloud]);
 
   useEffect(() => {
-    saveSession(session);
-  }, [session]);
+    if (!usesCloud) return;
+
+    const auth = getFirebaseAuth();
+    const unsub = onAuthStateChanged(auth, async (fbUser: FirebaseUser | null) => {
+      if (!fbUser) {
+        setCloudUser(null);
+        setReady(true);
+        return;
+      }
+      try {
+        const profile = await fetchUserProfile(fbUser.uid);
+        if (profile) {
+          setCloudUser(profileToUser(fbUser.uid, profile));
+        } else {
+          setCloudUser(null);
+        }
+      } catch (e) {
+        console.error(e);
+        setCloudUser(null);
+      }
+      setReady(true);
+    });
+    return () => unsub();
+  }, [usesCloud]);
 
   const currentUser = useMemo<User | null>(() => {
+    if (usesCloud) {
+      if (session && isGuestUserId(session.userId)) return syntheticGuestUser();
+      return cloudUser;
+    }
     if (!session) return null;
     if (isGuestUserId(session.userId)) return syntheticGuestUser();
     return users.users[session.userId] ?? null;
-  }, [session, users]);
+  }, [usesCloud, session, cloudUser, users]);
 
-  // If session points at a missing user (e.g., user deleted in another tab), drop it.
   useEffect(() => {
     if (
+      !usesCloud &&
       session &&
       !isGuestUserId(session.userId) &&
       !users.users[session.userId]
     ) {
       setSession(null);
     }
-  }, [session, users]);
+  }, [session, users, usesCloud]);
 
   const continueAsGuest = useCallback(() => {
     setSession({ userId: GUEST_USER_ID, startedAt: Date.now() });
   }, []);
 
-  const signUp = useCallback<AuthContextValue["signUp"]>(
+  const signUpCloud = useCallback<AuthContextValue["signUp"]>(
+    async ({ username, displayName, password }) => {
+      const u = canonicalUsername(username);
+      const nameError = validateUsername(u);
+      if (nameError) return { ok: false, error: nameError };
+      const pwError = validatePassword(password);
+      if (pwError) return { ok: false, error: pwError };
+
+      if (!(await isUsernameAvailable(u))) {
+        return { ok: false, error: "Username is taken." };
+      }
+
+      try {
+        const cred = await createUserWithEmailAndPassword(
+          getFirebaseAuth(),
+          usernameToAuthEmail(u),
+          password,
+        );
+        const now = Date.now();
+        const profile = {
+          username: u,
+          displayName: displayName.trim() || u,
+          createdAt: now,
+          lastLoginAt: now,
+        };
+        const nameRes = await claimUsername(cred.user.uid, u);
+        if (!nameRes.ok) {
+          return { ok: false, error: nameRes.error };
+        }
+        await createUserProfile(cred.user.uid, profile);
+        setCloudUser(profileToUser(cred.user.uid, profile));
+        setSession(null);
+        return { ok: true };
+      } catch (e) {
+        const code =
+          e && typeof e === "object" && "code" in e
+            ? String((e as { code: string }).code)
+            : "";
+        return { ok: false, error: firebaseAuthErrorMessage(code) };
+      }
+    },
+    [],
+  );
+
+  const signUpLocal = useCallback<AuthContextValue["signUp"]>(
     async ({ username, displayName, password }) => {
       const u = canonicalUsername(username);
       const nameError = validateUsername(u);
@@ -266,7 +355,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [users],
   );
 
-  const signIn = useCallback<AuthContextValue["signIn"]>(
+  const signInCloud = useCallback<AuthContextValue["signIn"]>(
+    async ({ username, password }) => {
+      const u = canonicalUsername(username);
+      try {
+        const cred = await signInWithEmailAndPassword(
+          getFirebaseAuth(),
+          usernameToAuthEmail(u),
+          password,
+        );
+        const profile = await fetchUserProfile(cred.user.uid);
+        if (!profile) {
+          return { ok: false, error: "Account profile missing. Contact support." };
+        }
+        await updateUserProfile(cred.user.uid, { lastLoginAt: Date.now() });
+        setCloudUser(
+          profileToUser(cred.user.uid, {
+            ...profile,
+            lastLoginAt: Date.now(),
+          }),
+        );
+        setSession(null);
+        return { ok: true };
+      } catch (e) {
+        const code =
+          e && typeof e === "object" && "code" in e
+            ? String((e as { code: string }).code)
+            : "";
+        return { ok: false, error: firebaseAuthErrorMessage(code) };
+      }
+    },
+    [],
+  );
+
+  const signInLocal = useCallback<AuthContextValue["signIn"]>(
     async ({ username, password }) => {
       const u = canonicalUsername(username);
       const userId = users.byUsername[u];
@@ -291,13 +413,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signOut = useCallback(() => {
+    if (usesCloud) {
+      void firebaseSignOut(getFirebaseAuth());
+    }
     setSession(null);
-  }, []);
+    setCloudUser(null);
+  }, [usesCloud]);
 
   const updateDisplayName = useCallback(
     (name: string) => {
       const clean = name.trim().slice(0, 40);
-      if (!clean || !currentUser) return;
+      if (!clean || !currentUser || currentUser.isGuest) return;
+
+      if (usesCloud) {
+        void updateUserProfile(currentUser.id, { displayName: clean });
+        setCloudUser((prev) =>
+          prev ? { ...prev, displayName: clean } : prev,
+        );
+        return;
+      }
+
       setUsers((prev) => {
         const u = prev.users[currentUser.id];
         if (!u) return prev;
@@ -307,7 +442,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
       });
     },
-    [currentUser],
+    [currentUser, usesCloud],
   );
 
   const value = useMemo<AuthContextValue>(
@@ -315,9 +450,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ready,
       currentUser,
       userCount: Object.keys(users.users).length,
+      usesCloud,
       continueAsGuest,
-      signUp,
-      signIn,
+      signUp: usesCloud ? signUpCloud : signUpLocal,
+      signIn: usesCloud ? signInCloud : signInLocal,
       signOut,
       updateDisplayName,
     }),
@@ -325,9 +461,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ready,
       currentUser,
       users,
+      usesCloud,
       continueAsGuest,
-      signUp,
-      signIn,
+      signUpCloud,
+      signUpLocal,
+      signInCloud,
+      signInLocal,
       signOut,
       updateDisplayName,
     ],
