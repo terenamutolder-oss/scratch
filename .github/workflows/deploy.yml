@@ -1,12 +1,21 @@
-name: Deploy to Firebase
+name: Deploy
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,9 +37,31 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
 
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy_pages:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
+
+  deploy_firestore_rules:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          workload_identity_provider: projects/107401835210/locations/global/workloadIdentityPools/github/providers/github
+          service_account: scratch-web-deploy@marsels-project.iam.gserviceaccount.com
 
-      - name: Deploy hosting + Firestore rules
-        run: npx firebase-tools deploy --only hosting,firestore:rules --project "${{ secrets.FIREBASE_PROJECT_ID }}" --non-interactive
+      - name: Deploy Firestore rules
+        run: |
+          npx firebase-tools deploy --only firestore:rules --project marsels-project --non-interactive
