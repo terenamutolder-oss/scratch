@@ -15,7 +15,13 @@ import { ProjectProvider, useProject } from "./state/ProjectContext";
 export default function App() {
   const { ready, currentUser, usesCloud } = useAuth();
 
-  if (!ready) return null;
+  if (!ready) {
+    return (
+      <div className="auth-shell">
+        <p className="brand-tag">Loading Scratch Web…</p>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return <AuthGate />;
