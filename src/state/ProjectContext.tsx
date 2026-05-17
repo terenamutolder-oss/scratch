@@ -314,7 +314,7 @@ export type ProjectContextValue = {
 
   /** Whether the *current* user owns the currently-open project. */
   isOwner: boolean;
-  /** Signed-in project owner only — visitors and guests cannot comment or like. */
+  /** Any signed-in account (not guest) can comment and like on any project. */
   canCommentAndLike: boolean;
   currentUserId: string;
 
@@ -538,7 +538,7 @@ export function ProjectProvider({
   const isOwner =
     !!currentProject.ownerId && currentProject.ownerId === userId;
 
-  const canCommentAndLike = isOwner && !isGuestUserId(userId);
+  const canCommentAndLike = !isGuestUserId(userId);
 
   /* --- refs for runtime --- */
 
@@ -857,11 +857,7 @@ export function ProjectProvider({
       const clean = text.trim();
       if (!clean) return;
       const p = library.projects[projectId];
-      if (
-        !p ||
-        p.ownerId !== userId ||
-        isGuestUserId(userId)
-      ) {
+      if (!p || isGuestUserId(userId)) {
         return;
       }
       const c: Comment = {
@@ -953,11 +949,7 @@ export function ProjectProvider({
   const toggleLike = useCallback(
     (projectId: string) => {
       const p = library.projects[projectId];
-      if (
-        !p ||
-        p.ownerId !== userId ||
-        isGuestUserId(userId)
-      ) {
+      if (!p || isGuestUserId(userId)) {
         return;
       }
       setLibrary((lib) =>

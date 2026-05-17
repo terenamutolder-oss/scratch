@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useAuth } from "../state/AuthContext";
 import { useProject } from "../state/ProjectContext";
 
 function fmtCount(n: number): string {
@@ -12,6 +13,7 @@ export default function ProjectSocialBar() {
     project,
     currentUserId,
     isOwner,
+    canCommentAndLike,
     socialAgeOk,
     confirmSocialAge,
     hasLiked,
@@ -21,6 +23,7 @@ export default function ProjectSocialBar() {
     isLongtimeSubscriber,
     toggleSubscribe,
   } = useProject();
+  const { currentUser } = useAuth();
 
   const [agePrompt, setAgePrompt] = useState(false);
   const pendingActionRef = useRef<(() => void) | null>(null);
@@ -78,16 +81,27 @@ export default function ProjectSocialBar() {
       </div>
 
       <div className="project-social-actions">
-        <button
-          type="button"
-          className={`social-btn social-btn--like ${liked ? "is-on" : ""}`}
-          onClick={() => requireAge(() => toggleLike(project.id))}
-          title={liked ? "Unlike" : "Like this project"}
-        >
-          <span aria-hidden>{liked ? "👍" : "👍🏻"}</span>
-          <span>{fmtCount(likes)}</span>
-          <span className="social-btn-label">Like</span>
-        </button>
+        {canCommentAndLike ? (
+          <button
+            type="button"
+            className={`social-btn social-btn--like ${liked ? "is-on" : ""}`}
+            onClick={() => requireAge(() => toggleLike(project.id))}
+            title={liked ? "Unlike" : "Like this project"}
+          >
+            <span aria-hidden>{liked ? "👍" : "👍🏻"}</span>
+            <span>{fmtCount(likes)}</span>
+            <span className="social-btn-label">Like</span>
+          </button>
+        ) : (
+          <span
+            className="social-btn social-btn--like social-btn--readonly"
+            title="Sign in to like this project"
+          >
+            <span aria-hidden>👍</span>
+            <span>{fmtCount(likes)}</span>
+            <span className="social-btn-label">Like</span>
+          </span>
+        )}
 
         {canSubscribe ? (
           <button
@@ -118,16 +132,27 @@ export default function ProjectSocialBar() {
           </span>
         ) : null}
 
-        <button
-          type="button"
-          className="social-btn social-btn--comment"
-          onClick={() => requireAge(scrollToComments)}
-          title="Jump to comments"
-        >
-          <span aria-hidden>💬</span>
-          <span>{fmtCount(project.comments.length)}</span>
-          <span className="social-btn-label">Comment</span>
-        </button>
+        {canCommentAndLike ? (
+          <button
+            type="button"
+            className="social-btn social-btn--comment"
+            onClick={() => requireAge(scrollToComments)}
+            title="Jump to comments"
+          >
+            <span aria-hidden>💬</span>
+            <span>{fmtCount(project.comments.length)}</span>
+            <span className="social-btn-label">Comment</span>
+          </button>
+        ) : (
+          <span
+            className="social-btn social-btn--comment social-btn--readonly"
+            title="Sign in to comment on this project"
+          >
+            <span aria-hidden>💬</span>
+            <span>{fmtCount(project.comments.length)}</span>
+            <span className="social-btn-label">Comment</span>
+          </span>
+        )}
       </div>
 
       {agePrompt && !socialAgeOk ? (
@@ -157,10 +182,27 @@ export default function ProjectSocialBar() {
         </div>
       ) : null}
 
+      {!canCommentAndLike ? (
+        <p className="project-social-visitor-hint">
+          {currentUser?.isGuest
+            ? "Guest mode: sign up to comment and like on any project. You can still run projects and subscribe to creators."
+            : null}
+        </p>
+      ) : null}
+
       <p className="project-social-footnote">
-        Comment, like, and subscribe below the stage.{" "}
-        <strong>16+ only</strong> — stay subscribed for{" "}
-        <strong>16 years</strong> on this browser to unlock the longtime badge.
+        {canCommentAndLike ? (
+          <>
+            Comment and like on any project below the stage. Subscribe to creators
+            here too. <strong>16+ only</strong> — stay subscribed for{" "}
+            <strong>16 years</strong> to unlock the longtime badge.
+          </>
+        ) : (
+          <>
+            Subscribe below the stage. <strong>16+ only</strong> — longtime badge
+            after <strong>16 years</strong>.
+          </>
+        )}
       </p>
     </section>
   );

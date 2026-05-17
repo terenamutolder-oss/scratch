@@ -15,6 +15,7 @@ function fmtTime(ts: number): string {
 export default function CommentsPanel() {
   const {
     project,
+    canCommentAndLike,
     addComment,
     deleteComment,
     canDeleteComment,
@@ -24,41 +25,54 @@ export default function CommentsPanel() {
   const { currentUser } = useAuth();
   const [text, setText] = useState("");
 
+  const visitorHint = currentUser?.isGuest
+    ? "Guest mode cannot post comments. Sign up to comment on any project."
+    : null;
+
   return (
     <section id="comments-section" className="comments-panel">
       <h2 className="panel-title">Comments</h2>
-      <p className="hint">
-        Posting as <strong>{currentUser?.displayName ?? "you"}</strong>
-        {currentUser ? <> (@{currentUser.username})</> : null}
-      </p>
 
-      <form
-        className="comment-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!text.trim()) return;
-          if (!socialAgeOk) {
-            const ok = window.confirm(
-              "Comments are for viewers 16 and older. Confirm you are 16+ to post?",
-            );
-            if (!ok) return;
-            confirmSocialAge();
-          }
-          addComment(project.id, text);
-          setText("");
-        }}
-      >
-        <textarea
-          className="comment-input"
-          placeholder={`Leave a note on "${project.name}"…`}
-          rows={2}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <button type="submit" className="btn btn-mini">
-          Post
-        </button>
-      </form>
+      {canCommentAndLike ? (
+        <>
+          <p className="hint">
+            Posting as <strong>{currentUser?.displayName ?? "you"}</strong>
+            {currentUser && !currentUser.isGuest ? (
+              <> (@{currentUser.username})</>
+            ) : null}
+          </p>
+
+          <form
+            className="comment-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!text.trim()) return;
+              if (!socialAgeOk) {
+                const ok = window.confirm(
+                  "Comments are for viewers 16 and older. Confirm you are 16+ to post?",
+                );
+                if (!ok) return;
+                confirmSocialAge();
+              }
+              addComment(project.id, text);
+              setText("");
+            }}
+          >
+            <textarea
+              className="comment-input"
+              placeholder={`Leave a note on "${project.name}"…`}
+              rows={2}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            <button type="submit" className="btn btn-mini">
+              Post
+            </button>
+          </form>
+        </>
+      ) : visitorHint ? (
+        <p className="comments-visitor-hint">{visitorHint}</p>
+      ) : null}
 
       <ul className="comment-list">
         {project.comments.length === 0 ? (
