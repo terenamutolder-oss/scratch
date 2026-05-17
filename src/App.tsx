@@ -7,6 +7,7 @@ import SpriteTray from "./components/SpriteTray";
 import StageView from "./components/StageView";
 import Toolbar from "./components/Toolbar";
 import UserMenu from "./components/UserMenu";
+import CloudStatusBanner from "./components/CloudStatusBanner";
 import { isGuestUserId } from "./types/auth";
 import { useAuth } from "./state/AuthContext";
 import { ProjectProvider, useProject } from "./state/ProjectContext";
@@ -50,6 +51,7 @@ function EditorShell({ usesCloud }: { usesCloud: boolean }) {
 
   return (
     <div className={`app-root ${readOnlyEditor ? "app-root--readonly" : ""}`}>
+      <CloudStatusBanner cloudSyncActive={usesCloud} />
       <header className="app-header">
         <div className="brand">
           <span className="brand-logo" aria-hidden>

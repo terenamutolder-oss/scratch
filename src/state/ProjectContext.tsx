@@ -50,6 +50,7 @@ import {
   importLocalLibraryIfNeeded,
   saveUserStateCloud,
   scheduleLibrarySync,
+  subscribeSharedLibrary,
 } from "../storage/cloudPersistence";
 import { ensureSeedProject } from "../storage/cloudSeed";
 
@@ -313,6 +314,8 @@ export type ProjectContextValue = {
 
   /** Whether the *current* user owns the currently-open project. */
   isOwner: boolean;
+  /** Signed-in project owner only — visitors and guests cannot comment or like. */
+  canCommentAndLike: boolean;
   currentUserId: string;
 
   // view + project lifecycle
@@ -535,6 +538,8 @@ export function ProjectProvider({
   const isOwner =
     !!currentProject.ownerId && currentProject.ownerId === userId;
 
+  const canCommentAndLike = isOwner && !isGuestUserId(userId);
+
   /* --- refs for runtime --- */
 
   const projectViewRef = useRef<Project>(asView(currentProject));
@@ -545,6 +550,24 @@ export function ProjectProvider({
   currentIdRef.current = userState.currentProjectId;
   const authorRef = useRef({ userId, username, displayName });
   authorRef.current = { userId, username, displayName };
+  /** Skip uploading to Firestore when library came from a remote snapshot. */
+  const skipNextCloudSyncRef = useRef(false);
+
+  /* --- live cloud sync (other devices) --- */
+
+  useEffect(() => {
+    if (!useCloud || isGuestUserId(userId) || !libraryReady) return;
+    return subscribeSharedLibrary((shared) => {
+      skipNextCloudSyncRef.current = true;
+      setLibrary(shared);
+      setUserState((prev) => {
+        const id = prev.currentProjectId;
+        if (id && shared.projects[id]) return prev;
+        const nextId = shared.projectOrder[0] ?? "";
+        return nextId === id ? prev : { ...prev, currentProjectId: nextId };
+      });
+    });
+  }, [useCloud, userId, libraryReady]);
 
   /* --- runtime --- */
 
@@ -580,6 +603,10 @@ export function ProjectProvider({
   useEffect(() => {
     if (!libraryReady) return;
     if (useCloud && !isGuestUserId(userId)) {
+      if (skipNextCloudSyncRef.current) {
+        skipNextCloudSyncRef.current = false;
+        return;
+      }
       scheduleLibrarySync(library);
       return;
     }
@@ -829,6 +856,14 @@ export function ProjectProvider({
     (projectId: string, text: string) => {
       const clean = text.trim();
       if (!clean) return;
+      const p = library.projects[projectId];
+      if (
+        !p ||
+        p.ownerId !== userId ||
+        isGuestUserId(userId)
+      ) {
+        return;
+      }
       const c: Comment = {
         id: randomId(),
         text: clean,
@@ -850,7 +885,7 @@ export function ProjectProvider({
           : prev,
       );
     },
-    [],
+    [library, userId],
   );
 
   const canDeleteComment = useCallback(
@@ -917,6 +952,14 @@ export function ProjectProvider({
 
   const toggleLike = useCallback(
     (projectId: string) => {
+      const p = library.projects[projectId];
+      if (
+        !p ||
+        p.ownerId !== userId ||
+        isGuestUserId(userId)
+      ) {
+        return;
+      }
       setLibrary((lib) =>
         withProject(lib, projectId, (p) => {
           const likes = p.likedByUserIds ?? [];
@@ -941,7 +984,7 @@ export function ProjectProvider({
         };
       });
     },
-    [userId],
+    [library, userId],
   );
 
   const isSubscribed = useCallback(
@@ -1446,6 +1489,7 @@ export function ProjectProvider({
       threadTick,
       view: userState.view,
       isOwner,
+      canCommentAndLike,
       currentUserId: userId,
 
       setView,
@@ -1503,6 +1547,7 @@ export function ProjectProvider({
       threadTick,
       userState.view,
       isOwner,
+      canCommentAndLike,
       userId,
       setView,
       createProject,

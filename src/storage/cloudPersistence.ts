@@ -4,8 +4,10 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   setDoc,
   writeBatch,
+  type QuerySnapshot,
 } from "firebase/firestore";
 import { getFirestoreDb } from "../lib/firebase";
 import type { SharedLibrary, StoredProject, Studio, UserState } from "../types/library";
@@ -63,13 +65,10 @@ export async function updateUserProfile(
   await setDoc(doc(getFirestoreDb(), "users", uid), patch, { merge: true });
 }
 
-export async function fetchSharedLibrary(): Promise<SharedLibrary> {
-  const db = getFirestoreDb();
-  const [projectsSnap, studiosSnap] = await Promise.all([
-    getDocs(collection(db, "projects")),
-    getDocs(collection(db, "studios")),
-  ]);
-
+function libraryFromSnapshots(
+  projectsSnap: QuerySnapshot,
+  studiosSnap: QuerySnapshot,
+): SharedLibrary {
   const projects: Record<string, StoredProject> = {};
   const projectRows: { id: string; updatedAt: number }[] = [];
   for (const d of projectsSnap.docs) {
@@ -95,6 +94,51 @@ export async function fetchSharedLibrary(): Promise<SharedLibrary> {
   return { projects, projectOrder, studios, studioOrder };
 }
 
+export async function fetchSharedLibrary(): Promise<SharedLibrary> {
+  const db = getFirestoreDb();
+  const [projectsSnap, studiosSnap] = await Promise.all([
+    getDocs(collection(db, "projects")),
+    getDocs(collection(db, "studios")),
+  ]);
+  return libraryFromSnapshots(projectsSnap, studiosSnap);
+}
+
+/** Live updates so other signed-in devices see new/edited projects. */
+export function subscribeSharedLibrary(
+  onUpdate: (library: SharedLibrary) => void,
+): () => void {
+  const db = getFirestoreDb();
+  let projectsSnap: QuerySnapshot | null = null;
+  let studiosSnap: QuerySnapshot | null = null;
+
+  const emit = () => {
+    if (!projectsSnap || !studiosSnap) return;
+    onUpdate(libraryFromSnapshots(projectsSnap, studiosSnap));
+  };
+
+  const unsubProjects = onSnapshot(
+    collection(db, "projects"),
+    (snap) => {
+      projectsSnap = snap;
+      emit();
+    },
+    (err) => console.error("Firestore projects listener:", err),
+  );
+  const unsubStudios = onSnapshot(
+    collection(db, "studios"),
+    (snap) => {
+      studiosSnap = snap;
+      emit();
+    },
+    (err) => console.error("Firestore studios listener:", err),
+  );
+
+  return () => {
+    unsubProjects();
+    unsubStudios();
+  };
+}
+
 export async function fetchUserState(uid: string): Promise<UserState | null> {
   const snap = await getDoc(doc(getFirestoreDb(), "userState", uid));
   if (!snap.exists()) return null;
@@ -115,7 +159,11 @@ export function scheduleLibrarySync(library: SharedLibrary) {
     const lib = pendingLibrary;
     pendingLibrary = null;
     syncTimer = null;
-    if (lib) void syncSharedLibrary(lib);
+    if (lib) {
+      void syncSharedLibrary(lib).catch((err) => {
+        console.error("Cloud sync failed:", err);
+      });
+    }
   }, 800);
 }
 

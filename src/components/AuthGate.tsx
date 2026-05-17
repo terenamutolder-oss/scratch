@@ -163,8 +163,9 @@ export default function AuthGate() {
             Continue without an account
           </button>
           <p className="auth-guest-hint">
-            Build and run projects on this device. Guest projects are shared in
-            the same library as signed-in users on this browser.
+            {usesCloud
+              ? "Guest projects are not saved to the cloud — other devices will not see them. Sign in to sync across phones, tablets, and computers."
+              : "Build and run projects on this device. Guest projects are shared in the same library as signed-in users on this browser."}
           </p>
         </div>
       </form>

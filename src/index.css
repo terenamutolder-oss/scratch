@@ -742,6 +742,23 @@ code {
   cursor: default;
 }
 
+.social-btn--readonly {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.project-social-visitor-hint,
+.comments-visitor-hint {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 213, 79, 0.1);
+  border: 1px solid rgba(255, 213, 79, 0.3);
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 .social-btn-label {
   font-weight: 600;
 }
@@ -1296,6 +1313,29 @@ code {
 
 .muted {
   color: var(--muted);
+}
+
+/* ---------- cloud status ---------- */
+
+.cloud-banner {
+  padding: 10px 16px;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.cloud-banner--warn {
+  background: #fff3cd;
+  color: #664d03;
+}
+
+.cloud-banner--ok {
+  background: #d1e7dd;
+  color: #0f5132;
+}
+
+.cloud-banner code {
+  font-size: 0.85em;
 }
 
 /* ---------- auth ---------- */
